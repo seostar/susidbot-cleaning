@@ -1,15 +1,9 @@
-import os
-import json
-import re
-import random
-import telebot
-import pytz
+import os, json, re, random, telebot, pytz
 from datetime import datetime
 
-# Налаштування
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
-THREAD_ID = os.getenv('THREAD_ID') 
+THREAD_ID = os.getenv('THREAD_ID')
 TIMEZONE = pytz.timezone('Europe/Kyiv')
 
 bot = telebot.TeleBot(TOKEN)
@@ -21,17 +15,11 @@ MONTHS_MAP = {
     10: ['жовт', 'окт'], 11: ['лист', 'нояб'], 12: ['груд', 'дек']
 }
 
-def load_config():
-    with open('config.json', 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-def load_history():
-    if os.path.exists('history.json'):
-        try:
-            with open('history.json', 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                return data if isinstance(data, dict) else {}
-        except: return {}
+def load_json(path):
+    if os.path.exists(path):
+        with open(path, 'r', encoding='utf-8') as f:
+            try: return json.load(f)
+            except: return {}
     return {}
 
 def save_history(history):
@@ -39,72 +27,70 @@ def save_history(history):
         json.dump(history, f, ensure_ascii=False, indent=4)
 
 def scan_and_update():
-    config = load_config()
-    history = load_history()
-    now_dt = datetime.now(TIMEZONE)
-    curr_month_key = now_dt.strftime('%m-%Y')
+    config = load_json('config.json')
+    history = load_json('history.json')
+    now = datetime.now(TIMEZONE)
+    active_apps = [str(a) for a in config['active_apartments']]
     
     updates = bot.get_updates(limit=100, timeout=10)
-    active_apps = [str(a) for a in config['active_apartments']]
-    confirm_words = ['оплат', 'сплач', 'готов', 'є', 'есть', 'ок', '+', '✅', 'перев', 'скину']
-    
+    confirm_keywords = ['оплат', 'сплач', 'готов', 'є', 'есть', 'ок', '+', '✅', 'скину', 'переказ']
+
     for u in updates:
-        if u.message and str(u.message.chat.id) == str(CHAT_ID):
-            text = u.message.text.lower() if u.message.text else ""
-            numbers = re.findall(r'(\d+)', text)
+        if not u.message or str(u.message.chat.id) != str(CHAT_ID): continue
+        
+        msg_time = datetime.fromtimestamp(u.message.date, pytz.utc).astimezone(TIMEZONE)
+        if (now - msg_time).total_seconds() > 86400: continue
+
+        text = u.message.text.lower() if u.message.text else ""
+        found_numbers = re.findall(r'(\d+)', text)
+        
+        if any(kw in text for kw in confirm_keywords) or "+" in text:
+            target_months = []
+            for m_idx, roots in MONTHS_MAP.items():
+                if any(root in text for root in roots):
+                    target_months.append(m_idx)
             
-            if any(kw in text for kw in confirm_words) or "+" in text:
-                for num in numbers:
-                    if num in active_apps:
-                        target_key = curr_month_key
-                        for m_idx, roots in MONTHS_MAP.items():
-                            if any(root in text for root in roots):
-                                target_key = f"{m_idx:02d}-{now_dt.year}"
-                        
-                        if target_key not in history: history[target_key] = []
-                        if num not in history[target_key]:
-                            history[target_key].append(num)
+            if not target_months: target_months = [now.month]
+
+            for num in found_numbers:
+                if num in active_apps:
+                    for m_idx in target_months:
+                        key = f"{m_idx:02d}-{now.year}"
+                        if key not in history: history[key] = []
+                        if num not in history[key]: history[key].append(num)
+    
     save_history(history)
     return history
 
 def run_logic():
     history = scan_and_update()
-    config = load_config()
+    config = load_json('config.json')
     now = datetime.now(TIMEZONE)
     
-    curr_month_key = now.strftime('%m-%Y')
-    paid_this_month = history.get(curr_month_key, [])
+    curr_key = now.strftime('%m-%Y')
+    paid = history.get(curr_key, [])
     active_list = sorted([str(a) for a in config['active_apartments']], key=int)
-    unpaid = [a for a in active_list if a not in paid_this_month]
+    unpaid = [a for a in active_list if a not in paid]
     
     ukr_months = {1:"січень", 2:"лютий", 3:"березень", 4:"квітень", 5:"травень", 6:"червень", 
                   7:"липень", 8:"серпень", 9:"вересень", 10:"жовтень", 11:"листопад", 12:"грудень"}
-    month_name = ukr_months.get(now.month)
+    m_name = ukr_months[now.month]
 
-    # Ручний запуск (Перевірка)
     if os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch':
-        msg1 = config['templates'][now.month - 1].format(month_name=month_name, neighbors_list=", ".join(active_list), card=config['card_details'], amount=config['monthly_fee'])
-        bot.send_message(CHAT_ID, msg1, message_thread_id=THREAD_ID, parse_mode='Markdown')
-        
-        msg2 = random.choice(config['report_templates']).format(month_name=month_name, paid_list=", ".join(sorted(paid_this_month, key=int)) if paid_this_month else "нікого", unpaid_list=", ".join(unpaid) if unpaid else "всіх!")
-        bot.send_message(CHAT_ID, msg2, message_thread_id=THREAD_ID, parse_mode='Markdown')
-        
+        bot.send_message(CHAT_ID, config['templates'][now.month-1].format(month_name=m_name, neighbors_list=", ".join(active_list), card=config['card_details'], amount=config['monthly_fee']), message_thread_id=THREAD_ID, parse_mode='Markdown')
+        bot.send_message(CHAT_ID, random.choice(config['report_templates']).format(month_name=m_name, paid_list=", ".join(sorted(paid, key=int)) if paid else "нікого", unpaid_list=", ".join(unpaid) if unpaid else "всіх!"), message_thread_id=THREAD_ID, parse_mode='Markdown')
         if unpaid:
-            msg3 = random.choice(config['reminder_templates']).format(month_name=month_name, unpaid_list=", ".join(unpaid), card=config['card_details'])
-            bot.send_message(CHAT_ID, msg3, message_thread_id=THREAD_ID, parse_mode='Markdown')
+            bot.send_message(CHAT_ID, random.choice(config['reminder_templates']).format(month_name=m_name, unpaid_list=", ".join(unpaid), card=config['card_details']), message_thread_id=THREAD_ID, parse_mode='Markdown')
         return
 
-    # Розклад
     day, hour = now.day, now.hour
     if day == 1 and hour == 9:
-        bot.send_message(CHAT_ID, config['templates'][now.month-1].format(month_name=month_name, neighbors_list=", ".join(active_list), card=config['card_details'], amount=config['monthly_fee']), message_thread_id=THREAD_ID, parse_mode='Markdown')
+        bot.send_message(CHAT_ID, config['templates'][now.month-1].format(month_name=m_name, neighbors_list=", ".join(active_list), card=config['card_details'], amount=config['monthly_fee']), message_thread_id=THREAD_ID, parse_mode='Markdown')
     elif day == 11 and hour == 12:
-        report = random.choice(config['report_templates']).format(month_name=month_name, paid_list=", ".join(sorted(paid_this_month, key=int)) if paid_this_month else "нікого", unpaid_list=", ".join(unpaid) if unpaid else "всіх!")
-        bot.send_message(CHAT_ID, report, message_thread_id=THREAD_ID, parse_mode='Markdown')
+        bot.send_message(CHAT_ID, random.choice(config['report_templates']).format(month_name=m_name, paid_list=", ".join(sorted(paid, key=int)) if paid else "нікого", unpaid_list=", ".join(unpaid) if unpaid else "всіх!"), message_thread_id=THREAD_ID, parse_mode='Markdown')
     elif day == 19 and hour == 12:
         if unpaid:
-            remind = random.choice(config['reminder_templates']).format(month_name=month_name, unpaid_list=", ".join(unpaid), card=config['card_details'])
-            bot.send_message(CHAT_ID, remind, message_thread_id=THREAD_ID, parse_mode='Markdown')
+            bot.send_message(CHAT_ID, random.choice(config['reminder_templates']).format(month_name=m_name, unpaid_list=", ".join(unpaid), card=config['card_details']), message_thread_id=THREAD_ID, parse_mode='Markdown')
 
 if __name__ == "__main__":
     run_logic()
