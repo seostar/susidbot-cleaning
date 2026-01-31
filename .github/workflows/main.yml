@@ -1,16 +1,13 @@
 name: Cleaner Bot
-
 on:
   schedule:
-    - cron: '0 21 * * *'  # 23:00 (Збір оплат)
-    - cron: '0 7 1 * *'   # 1 число, 09:00 (Старт)
-    - cron: '0 10 11 * *' # 11 число, 12:00 (Звіт)
-    - cron: '0 10 19 * *' # 19 число, 12:00 (Нагадування)
+    - cron: '0 21 * * *'
+    - cron: '0 7 1 * *'
+    - cron: '0 10 11 * *'
+    - cron: '0 10 19 * *'
   workflow_dispatch:
-
 permissions:
   contents: write
-
 jobs:
   run-bot:
     runs-on: ubuntu-latest
