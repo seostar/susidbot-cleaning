@@ -8,6 +8,7 @@ TIMEZONE = pytz.timezone('Europe/Kyiv')
 
 bot = telebot.TeleBot(TOKEN)
 
+# Словник для розпізнавання місяців
 MONTHS_MAP = {
     1: ['січ', 'янв'], 2: ['лют', 'фев'], 3: ['берез', 'март'],
     4: ['квіт', 'апр'], 5: ['трав', 'май'], 6: ['черв', 'июн'],
@@ -40,36 +41,41 @@ def scan_and_update():
             if not u.message or str(u.message.chat.id) != str(CHAT_ID): continue
             text = u.message.text.lower() if u.message.text else ""
             
-            # Шукаємо квартиру
+            # 1. Знаходимо квартиру
             all_nums = re.findall(r'\b\d+\b', text)
             app_num = next((n for n in all_nums if n in active_apps), None)
             
-            if app_num and (any(kw in text for kw in confirm_keywords) or "+" in text):
-                target_months = []
-                # Перевірка на назви місяців
-                for m_idx, roots in MONTHS_MAP.items():
-                    if any(root in text for root in roots): target_months.append(m_idx)
-                
-                # Перевірка "за X міс"
-                clean_text = text.replace(app_num, "", 1)
-                multi = re.search(r'(\d+)\s*(міс|мес|місяц)', clean_text)
-                if multi:
-                    count = int(multi.group(1))
-                    start_m = now.month if now.day < 25 else (now.month % 12) + 1
-                    for i in range(count):
-                        target_months.append(((start_m + i - 1) % 12) + 1)
+            if app_num:
+                # 2. Перевіряємо, чи це повідомлення про оплату
+                if any(kw in text for kw in confirm_keywords) or "+" in text:
+                    target_months = []
+                    
+                    # Шукаємо назви місяців
+                    for m_idx, roots in MONTHS_MAP.items():
+                        if any(root in text for root in roots): target_months.append(m_idx)
+                    
+                    # Шукаємо "за X міс" (виключаючи номер квартири)
+                    clean_text = text.replace(app_num, "", 1)
+                    multi = re.search(r'(\d+)\s*(міс|мес|місяц)', clean_text)
+                    if multi:
+                        count = int(multi.group(1))
+                        # Початок з розрахункового місяця
+                        start_m = now.month if now.day < 25 else (now.month % 12) + 1
+                        for i in range(count):
+                            target_months.append(((start_m + i - 1) % 12) + 1)
 
-                if not target_months:
-                    target_months = [now.month if now.day < 25 else (now.month % 12) + 1]
-                
-                for m_idx in set(target_months):
-                    year = now.year
-                    if m_idx < now.month and now.month >= 11: year += 1
-                    key = f"{m_idx:02d}-{year}"
-                    if key not in history: history[key] = []
-                    if app_num not in history[key]:
-                        history[key].append(app_num)
-                        print(f"DEBUG: Found {app_num} for {key}")
+                    # Дефолтний місяць
+                    if not target_months:
+                        target_months = [now.month if now.day < 25 else (now.month % 12) + 1]
+                    
+                    for m_idx in set(target_months):
+                        year = now.year
+                        if m_idx < now.month and now.month >= 11: year += 1
+                        key = f"{m_idx:02d}-{year}"
+                        if key not in history: history[key] = []
+                        if app_num not in history[key]:
+                            history[key].append(app_num)
+                            print(f"DEBUG: Додано квартиру {app_num} на період {key}")
     except Exception as e:
         print(f"Scan error: {e}")
     
@@ -89,7 +95,7 @@ def send_all_messages(config, history, month_idx, year):
     signature = "\n\n_🤖 beta-версія (бот може помилятися)_"
 
     try:
-        # 1. Головне повідомлення
+        # 1. Реквізити
         main_text = config['templates'][month_idx-1].format(
             month_name=m_name, 
             neighbors_list=", ".join(active_list), 
@@ -108,7 +114,7 @@ def send_all_messages(config, history, month_idx, year):
         ) + signature
         bot.send_message(CHAT_ID, report, message_thread_id=THREAD_ID, parse_mode='Markdown')
 
-        # 3. Нагадування (тільки якщо є борги)
+        # 3. Нагадування
         if unpaid:
             remind = random.choice(config['reminder_templates']).format(
                 month_name=m_name, 
