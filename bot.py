@@ -40,7 +40,6 @@ def scan_and_update():
             if not u.message or str(u.message.chat.id) != str(CHAT_ID): continue
             text = u.message.text.lower() if u.message.text else ""
             
-            # 1. Беремо ПЕРШЕ число в тексті як номер квартири
             match = re.search(r'\d+', text)
             if not match: continue
             
@@ -49,12 +48,10 @@ def scan_and_update():
             if app_num in active_apps and (any(kw in text for kw in confirm_keywords) or "+" in text):
                 target_months = []
                 
-                # 2. Шукаємо назви місяців
                 for m_idx, roots in MONTHS_MAP.items():
                     if any(root in text for root in roots):
                         target_months.append(m_idx)
                 
-                # 3. Шукаємо "за X міс" (вирізаємо перше число, щоб не плутати з квартирою)
                 clean_text = text.replace(app_num, "", 1)
                 multi = re.search(r'(\d+)\s*(міс|мес|місяц)', clean_text)
                 if multi:
@@ -68,7 +65,6 @@ def scan_and_update():
                 
                 for m_idx in set(target_months):
                     year = now.year
-                    # Якщо місяць минулий, а зараз кінець року — можливо це наступний рік
                     if m_idx < now.month and now.month >= 11: year += 1
                     
                     key = f"{m_idx:02d}-{year}"
@@ -123,11 +119,20 @@ def run_logic():
     history = scan_and_update()
     config = load_json('config.json')
     now = datetime.now(TIMEZONE)
+    
+    # Визначаємо цільовий місяць (якщо після 25-го числа — готуємося до наступного)
     target_month = now.month if now.day < 25 else (now.month % 12) + 1
     target_year = now.year if not (now.month == 12 and target_month == 1) else now.year + 1
 
-    if os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch':
+    event = os.getenv('GITHUB_EVENT_NAME')
+
+    # ВІДПРАВЛЯЄМО ПОВІДОМЛЕННЯ, ЯКЩО:
+    # 1. Запуск вручну (workflow_dispatch)
+    # 2. АБО сьогодні 1, 11 або 19 число (незалежно від типу запуску)
+    if event == 'workflow_dispatch' or now.day in [1, 11, 19]:
         send_all_messages(config, history, target_month, target_year)
+    else:
+        print(f"DEBUG: Сьогодні {now.day} число. Повідомлення не надсилаються, лише сканування.")
 
 if __name__ == "__main__":
     run_logic()
