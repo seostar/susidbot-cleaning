@@ -74,7 +74,8 @@ def run_logic():
                   7:"липень", 8:"серпень", 9:"вересень", 10:"жовтень", 11:"листопад", 12:"грудень"}
     m_name = ukr_months[now.month]
     
-    signature = "\n\n_🤖 Бот навчається: якщо я помилився, просто напишіть номер вашої кв._"
+    # Твій новий лаконічний підпис
+    signature = "\n\n_🤖 beta-версія_"
 
     if os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch':
         bot.send_message(CHAT_ID, config['templates'][now.month-1].format(month_name=m_name, neighbors_list=", ".join(active_list), card=config['card_details'], amount=config['monthly_fee']) + signature, message_thread_id=THREAD_ID, parse_mode='Markdown')
