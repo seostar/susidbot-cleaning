@@ -1,124 +1,100 @@
+import os
 import json
-import datetime
-import schedule
-import time
-import threading
-from zoneinfo import ZoneInfo
+import re
+from datetime import datetime
+import telebot
+import pytz
 
-from config import TOKEN, CHAT_ID, THREAD_ID, CURRENT_MONTH, PAYMENT_CARD, PAYMENT_AMOUNT, PAYMENT_DEADLINE
-from telegram import Bot, Update
-from telegram.constants import ParseMode
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+# Налаштування
+TOKEN = os.getenv('TELEGRAM_TOKEN')
+CHAT_ID = os.getenv('CHAT_ID')
+THREAD_ID = os.getenv('THREAD_ID') 
+TIMEZONE = pytz.timezone('Europe/Kyiv')
 
-# --- Завантаження JSON ---
-def load_json(file):
-    try:
-        with open(file, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {}
+# Активні квартири
+ACTIVE_APARTMENTS = [6, 7, 11, 14, 17, 18, 19, 20, 22, 23, 26, 33, 34, 36, 39, 42, 43, 44, 46]
 
-def save_json(file, data):
-    with open(file, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+bot = telebot.TeleBot(TOKEN)
 
-history = load_json("history.json")
-templates = load_json("messages_template.json")
-active_apts = load_json("active_apartments.json")
+def get_month_ukr(month_idx):
+    months = {
+        1: "січень", 2: "лютий", 3: "березень", 4: "квітень", 5: "травень", 6: "червень",
+        7: "липень", 8: "серпень", 9: "вересень", 10: "жовтень", 11: "листопад", 12: "грудень"
+    }
+    return months[month_idx]
 
-bot = Bot(TOKEN)
+def load_history():
+    if os.path.exists('history.json'):
+        with open('history.json', 'r', encoding='utf-8') as f:
+            try: return json.load(f)
+            except: return {}
+    return {}
 
-# --- Функції парсингу повідомлень ---
-def parse_payment(message):
-    message = message.lower()
-    if "кв" not in message or "оплачено" not in message:
-        return None
-    try:
-        parts = message.split("кв")[1].split("–")[0].strip()
-        apt_num = int(parts)
-    except:
-        return None
-    months = []
-    for m in ["січень","лютий","березень","квітень","травень","червень",
-              "липень","серпень","вересень","жовтень","листопад","грудень"]:
-        if m in message:
-            months.append(m)
-    if not months:
-        months = [CURRENT_MONTH]
-    return apt_num, months
+def save_history(history):
+    with open('history.json', 'w', encoding='utf-8') as f:
+        json.dump(history, f, ensure_ascii=False, indent=4)
 
-def update_history(message):
-    parsed = parse_payment(message)
-    if not parsed:
-        return
-    apt, months = parsed
-    if str(apt) not in history:
-        history[str(apt)] = {}
-    for m in months:
-        history[str(apt)][m] = True
-    save_json("history.json", history)
+def scan_messages():
+    history = load_history()
+    now_dt = datetime.now(TIMEZONE)
+    curr_key = now_dt.strftime('%m-%Y')
+    
+    if curr_key not in history: history[curr_key] = []
 
-def handle_updates():
-    updates = bot.get_updates(timeout=10)
+    # Читаємо останні повідомлення
+    updates = bot.get_updates(limit=100)
     for u in updates:
-        if u.message and hasattr(u.message, 'message_thread_id') and u.message.message_thread_id == THREAD_ID:
-            text = u.message.text
-            update_history(text)
+        if u.message and str(u.message.chat.id) == str(CHAT_ID):
+            if str(u.message.message_thread_id) == str(THREAD_ID):
+                text = u.message.text.lower() if u.message.text else ""
+                match = re.search(r'(\d+)', text)
+                
+                if match and any(word in text for word in ['оплат', 'сплачено', 'ок', 'готово']):
+                    num = str(match.group(1))
+                    if int(num) in ACTIVE_APARTMENTS and num not in history[curr_key]:
+                        history[curr_key].append(num)
+    
+    save_history(history)
+    return history[curr_key]
 
-def get_waiting_list(month):
-    waiting = []
-    for apt in active_apts:
-        if str(apt) not in history or history[str(apt)].get(month) != True:
-            waiting.append(f"Кв.{apt} ⏳")
-    return "\n".join(waiting) if waiting else "✅ Всі оплатили!"
+def run_logic():
+    now = datetime.now(TIMEZONE)
+    day = now.day
+    hour = now.hour
+    paid = scan_messages()
+    unpaid = [str(a) for a in ACTIVE_APARTMENTS if str(a) not in paid]
+    month_name = get_month_ukr(now.month)
 
-# --- Повідомлення ---
-def send_welcome():
-    text = templates["welcome"].format(
-        month=CURRENT_MONTH,
-        card=PAYMENT_CARD,
-        amount=PAYMENT_AMOUNT,
-        deadline=PAYMENT_DEADLINE
-    )
-    msg = bot.send_message(CHAT_ID, text, parse_mode=ParseMode.MARKDOWN)
-    bot.pin_chat_message(CHAT_ID, msg.message_id)
-    print("[INFO] Вітальне повідомлення відправлено і закріплено.")
+    # 1 ЧИСЛО - 09:00 - Вітання
+    if day == 1 and hour == 9:
+        text = (f"🌿 Почався {month_name} — дякуємо, що підтримуєте чистоту 💚\n\n"
+                f"💳 **5168 7451 4881 9912**\n💰 170 грн/міс (до 10 числа)\n"
+                f"📝 Призначення: «прибирання, кв. [номер]»\n\n"
+                f"✅ Після оплати напишіть: «кв. [номер] – оплачено»")
+        msg = bot.send_message(CHAT_ID, text, message_thread_id=THREAD_ID, parse_mode='Markdown')
+        try: bot.pin_chat_message(CHAT_ID, msg.message_id)
+        except: pass
 
-def send_report():
-    text = templates["report"].format(waiting_list=get_waiting_list(CURRENT_MONTH))
-    bot.send_message(CHAT_ID, text, parse_mode=ParseMode.MARKDOWN)
-    print("[INFO] Звіт по оплатах відправлено.")
+    # 11 ЧИСЛО - 12:00 - Звіт
+    elif day == 11 and hour == 12:
+        text = f"📊 **Звіт по оплатах за {month_name}:**\n\n"
+        text += "✅ Оплатили: " + (", ".join(paid) if paid else "поки що ніхто")
+        if unpaid:
+            text += f"\n\n⏳ Ще чекаємо на підтвердження від: {', '.join(unpaid)}"
+        bot.send_message(CHAT_ID, text, message_thread_id=THREAD_ID, parse_mode='Markdown')
 
-def send_reminder():
-    text = templates["reminder"].format(waiting_list=get_waiting_list(CURRENT_MONTH))
-    bot.send_message(CHAT_ID, text, parse_mode=ParseMode.MARKDOWN)
-    print("[INFO] Нагадування відправлено.")
+    # 19 ЧИСЛО - 12:00 - Нагадування
+    elif day == 19 and hour == 12:
+        if unpaid:
+            text = (f"✨ Нагадуємо про оплату чистоти у нашому домі!\n\n"
+                    f"Будемо вдячні за внесок від кв: {', '.join(unpaid)} 💚\n"
+                    f"Це допомагає підтримувати наш під'їзд у гарному стані.")
+            bot.send_message(CHAT_ID, text, message_thread_id=THREAD_ID)
 
-# --- Команда /send_now ---
-async def send_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    handle_updates()  # оновлюємо історію перед повідомленнями
-    send_welcome()
-    send_report()
-    send_reminder()
-    await update.message.reply_text("✅ Всі тестові повідомлення відправлені!")
+    # Останній день місяця 23:00 - Зняти закріп
+    if day >= 28 and hour == 23:
+        try: bot.unpin_all_chat_messages(CHAT_ID)
+        except: pass
 
-# --- Створення застосунку і хендлер ---
-app = ApplicationBuilder().token(TOKEN).build()
-app.add_handler(CommandHandler("send_now", send_now))
-
-# --- Планування щоденного оновлення ---
-def schedule_jobs():
-    tz = ZoneInfo("Europe/Kiev")
-    schedule.every().day.at("23:00").do(handle_updates)
-    schedule.every().day.at("09:00").do(lambda: send_welcome() if datetime.datetime.now(tz).day==1 else None)
-    schedule.every().day.at("12:00").do(lambda: send_report() if datetime.datetime.now(tz).day==11 else None)
-    schedule.every().day.at("12:00").do(lambda: send_reminder() if datetime.datetime.now(tz).day==19 else None)
-    while True:
-        schedule.run_pending()
-        time.sleep(10)
-
-threading.Thread(target=schedule_jobs, daemon=True).start()
-
-# --- Основний цикл ---
-print("[INFO] SusidBot-Cleaning запущено...")
-app.run_polling()
+if __name__ == "__main__":
+    run_logic()
