@@ -2,8 +2,8 @@ name: Cleaner Bot
 
 on:
   schedule:
-    - cron: '0 18 * * *'  # 20:00 за Києвом (18:00 UTC) щодня
-  workflow_dispatch:
+    - cron: '10 18 * * *'  # Щодня о 20:10 за Києвом
+  workflow_dispatch:      # Залишаємо для ручного запуску
 
 jobs:
   build:
