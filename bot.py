@@ -32,8 +32,10 @@ def scan_and_update():
     now = datetime.now(TIMEZONE)
     active_apps = [str(a) for a in config.get('active_apartments', [])]
     
+    print("DEBUG: Починаю сканування повідомлень...")
     try:
         updates = bot.get_updates(limit=100, timeout=10)
+        print(f"DEBUG: Отримано {len(updates)} повідомлень з Telegram")
         confirm_keywords = ['оплат', 'сплач', 'готов', 'є', 'есть', 'ок', '+', '✅', 'переказ', 'скинув', 'скинула', 'за']
 
         for u in updates:
@@ -44,36 +46,25 @@ def scan_and_update():
             if not match: continue
             
             app_num = match.group()
-            
             if app_num in active_apps and (any(kw in text for kw in confirm_keywords) or "+" in text):
                 target_months = []
-                
                 for m_idx, roots in MONTHS_MAP.items():
                     if any(root in text for root in roots):
                         target_months.append(m_idx)
                 
-                clean_text = text.replace(app_num, "", 1)
-                multi = re.search(r'(\d+)\s*(міс|мес|місяц)', clean_text)
-                if multi:
-                    count = int(multi.group(1))
-                    start_m = now.month if now.day < 25 else (now.month % 12) + 1
-                    for i in range(count):
-                        target_months.append(((start_m + i - 1) % 12) + 1)
-
                 if not target_months:
                     target_months = [now.month if now.day < 25 else (now.month % 12) + 1]
                 
                 for m_idx in set(target_months):
                     year = now.year
                     if m_idx < now.month and now.month >= 11: year += 1
-                    
                     key = f"{m_idx:02d}-{year}"
                     if key not in history: history[key] = []
                     if app_num not in history[key]:
                         history[key].append(app_num)
-                        print(f"DEBUG: Квартира {app_num} додана за {key}")
+                        print(f"DEBUG: Знайдено оплату! Квартира {app_num} за {key}")
     except Exception as e:
-        print(f"Scan error: {e}")
+        print(f"ERROR Scan: {e}")
     
     save_history(history)
     return history
@@ -88,13 +79,16 @@ def send_all_messages(config, history, month_idx, year):
     active_list = sorted([str(a) for a in config.get('active_apartments', [])], key=int)
     unpaid = [a for a in active_list if a not in paid]
     
-    signature = "\n\n_🤖 beta-версія (бот може помилятися)_"
+    signature = "\n\n_🤖 beta-версія_"
+    print(f"DEBUG: Формую повідомлення для {m_name} {year}...")
 
     try:
         # 1. Реквізити
         main_text = config['templates'][month_idx-1].format(
             month_name=m_name, neighbors_list=", ".join(active_list), 
             card=config['card_details'], amount=config['monthly_fee']) + signature
+        
+        print("DEBUG: Спроба відправки Реквізитів...")
         m = bot.send_message(CHAT_ID, main_text, message_thread_id=THREAD_ID, parse_mode='Markdown')
         bot.unpin_all_chat_messages(CHAT_ID)
         bot.pin_chat_message(CHAT_ID, m.message_id)
@@ -112,27 +106,25 @@ def send_all_messages(config, history, month_idx, year):
                 month_name=m_name, unpaid_list=", ".join(unpaid), 
                 card=config['card_details']) + signature
             bot.send_message(CHAT_ID, remind, message_thread_id=THREAD_ID, parse_mode='Markdown')
+        print("DEBUG: Усі повідомлення надіслано успішно!")
     except Exception as e:
-        print(f"Send error: {e}")
+        print(f"ERROR Send: {e}")
 
 def run_logic():
     history = scan_and_update()
     config = load_json('config.json')
     now = datetime.now(TIMEZONE)
     
-    # Визначаємо цільовий місяць (якщо після 25-го числа — готуємося до наступного)
     target_month = now.month if now.day < 25 else (now.month % 12) + 1
     target_year = now.year if not (now.month == 12 and target_month == 1) else now.year + 1
 
     event = os.getenv('GITHUB_EVENT_NAME')
+    print(f"DEBUG: День: {now.day}, Подія: {event}")
 
-    # ВІДПРАВЛЯЄМО ПОВІДОМЛЕННЯ, ЯКЩО:
-    # 1. Запуск вручну (workflow_dispatch)
-    # 2. АБО сьогодні 1, 11 або 19 число (незалежно від типу запуску)
     if event == 'workflow_dispatch' or now.day in [1, 11, 19]:
         send_all_messages(config, history, target_month, target_year)
     else:
-        print(f"DEBUG: Сьогодні {now.day} число. Повідомлення не надсилаються, лише сканування.")
+        print(f"DEBUG: Сьогодні не час для звіту. Тільки сканування.")
 
 if __name__ == "__main__":
     run_logic()
