@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import random
 from datetime import datetime, timedelta
 import telebot
 import pytz
@@ -51,17 +52,8 @@ def scan_messages():
             text = u.message.text.lower() if u.message.text else ""
             numbers = re.findall(r'(\d+)', text)
             
-            # Словник підтверджень (укр + рос)
-            confirm_words = [
-                'оплат', 'сплач', 'готово', 'є', 'ок', '+', '✅', 
-                'перевела', 'скинула', 'оплатила', 'оплатил', 'заплатили', 'перевел'
-            ]
-            # Маркери наперед (укр + рос)
-            advance_indicators = [
-                'наперед', 'вперед', '2 місяці', '2 месяца', 'за два', 'наступний',
-                'січень', 'январь', 'лютий', 'февраль', 'березень', 'март', 
-                'квітень', 'апрель', 'травень', 'май', 'червень', 'июнь'
-            ]
+            confirm_words = ['оплат', 'сплач', 'готово', 'є', 'есть', 'ок', '+', '✅', 'перевел', 'скинул', 'оплатил', 'скинула', 'перевела']
+            advance_indicators = ['наперед', 'вперед', 'следующий', 'наступний', 'январь', 'февраль', 'март', 'апрель', 'май', 'июнь']
             
             if any(kw in text for kw in confirm_words) or any(ai in text for ai in advance_indicators):
                 for num in numbers:
@@ -71,14 +63,13 @@ def scan_messages():
                         if any(ai in text for ai in advance_indicators):
                             if num not in history[next_key]:
                                 history[next_key].append(num)
-    
     save_history(history)
     return history[curr_key]
 
 def run_logic():
     config = load_config()
     now = datetime.now(TIMEZONE)
-    day, hour = now.day, now.hour
+    day, hour, minute = now.day, now.hour, now.minute
     
     paid = scan_messages()
     active_list = sorted([str(a) for a in config['active_apartments']], key=int)
@@ -86,37 +77,26 @@ def run_logic():
     month_name = get_month_ukr(now.month)
     is_manual = os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch'
 
-    # --- 1 ЧИСЛО: Реквізити ---
+    # --- 1 ЧИСЛО: Збір ---
     if (day == 1 and hour == 9) or is_manual:
         template = config['templates'][now.month - 1]
-        msg_text = template.format(
-            month_name=month_name, 
-            neighbors_list=", ".join(active_list),
-            card=config['card_details'], 
-            amount=config['monthly_fee']
-        )
+        msg_text = template.format(month_name=month_name, neighbors_list=", ".join(active_list), card=config['card_details'], amount=config['monthly_fee'])
         msg = bot.send_message(CHAT_ID, msg_text, message_thread_id=THREAD_ID, parse_mode='Markdown')
         try: bot.pin_chat_message(CHAT_ID, msg.message_id)
         except: pass
 
     # --- 11 ЧИСЛО: Звіт ---
     if (day == 11 and hour == 12) or (is_manual and day != 1):
-        report = (f"📊 **Звіт по внесках за {month_name}:**\n\n"
-                  f"Дякуємо всім, хто підтримує чисте середовище! ✨\n\n"
-                  f"✅ **Внесок зробили:** {', '.join(sorted(paid, key=int)) if paid else 'поки ніхто'}\n"
-                  f"⏳ **Ще очікуємо від:** {', '.join(unpaid) if unpaid else 'всіх добросусідів!'}\n\n"
-                  f"*Якщо ви оплатили, але вас немає в списку — просто напишіть номер квартири та «оплачено»*.")
+        tpl = random.choice(config['report_templates'])
+        report = tpl.format(month_name=month_name, paid_list=", ".join(sorted(paid, key=int)) if paid else "нікого", unpaid_list=", ".join(unpaid) if unpaid else "всіх!")
         bot.send_message(CHAT_ID, report, message_thread_id=THREAD_ID, parse_mode='Markdown')
 
-    # --- 19 ЧИСЛО: Нагадування (До совісті) ---
-    if (day == 19 and hour == 12) or (is_manual and day != 1 and day != 11):
+    # --- 19 ЧИСЛО: Нагадування ---
+    if (day == 19 and hour == 12) or (is_manual and day not in [1, 11]):
         if unpaid:
-            remind_text = (f"📢 **Сусіди, маленьке нагадування!**\n\n"
-                           f"Ми все ще очікуємо внески за {month_name} від кв: {', '.join(unpaid)}.\n\n"
-                           f"Чи можемо ми на вас розрахувати? Якщо ні — будь ласка, повідомте. "
-                           f"Від кількості учасників залежить розмір внеску для кожного, і нам важливо розуміти, чи не доведеться його збільшувати наступного місяця.\n\n"
-                           f"💳 `{config['card_details']}` | Внесок: {config['monthly_fee']} грн")
-            bot.send_message(CHAT_ID, remind_text, message_thread_id=THREAD_ID, parse_mode='Markdown')
+            tpl = random.choice(config['reminder_templates'])
+            remind = tpl.format(month_name=month_name, unpaid_list=", ".join(unpaid), card=config['card_details'])
+            bot.send_message(CHAT_ID, remind, message_thread_id=THREAD_ID, parse_mode='Markdown')
 
 if __name__ == "__main__":
     run_logic()
