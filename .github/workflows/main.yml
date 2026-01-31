@@ -1,14 +1,18 @@
-name: House Cleaner Bot
+name: Cleaner Bot Workflow
+
 on:
   schedule:
-    - cron: '0 * * * *' # Запуск щогодини
-  workflow_dispatch:      # Кнопка для ручного запуску
+    - cron: '0 21 * * *'  # Щодня о 23:00 (Київ) - збір оплат
+    - cron: '0 7 1 * *'   # 09:00 (Київ) 1-го числа
+    - cron: '0 10 11 * *' # 12:00 (Київ) 11-го числа
+    - cron: '0 10 19 * *' # 12:00 (Київ) 19-го числа
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  run-bot:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -22,17 +26,17 @@ jobs:
       - name: Install dependencies
         run: pip install pyTelegramBotAPI pytz
 
-      - name: Run Bot
+      - name: Run Bot Logic
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           THREAD_ID: ${{ secrets.THREAD_ID }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: python bot.py
 
-      - name: Save history
+      - name: Commit and Push changes
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add history.json
-          git commit -m "Update payment history" || echo "No changes to commit"
-          git push
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update history" && git push)
