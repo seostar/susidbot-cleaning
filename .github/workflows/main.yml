@@ -1,36 +1,47 @@
-name: Cleaner Bot
+
+name: Cleaner Bot Workflow
 
 on:
   schedule:
-    - cron: '15 19 * * *'  # 21:15 за Києвом (19:15 UTC)
-  workflow_dispatch:
+    # Запуск щодня о 21:00 UTC (це 23:00 за Києвом) для збору оплат
+    - cron: '0 21 * * *'
+    # Запуски для розкладу (1, 11, 19 числа)
+    - cron: '0 7 1 * *'   # 09:00 за Києвом 1-го числа
+    - cron: '0 10 11 * *'  # 12:00 за Києвом 11-го числа
+    - cron: '0 10 19 * *'  # 12:00 за Києвом 19-го числа
+  workflow_dispatch: # Кнопка для ручного запуску (ваша перевірка)
+
+permissions:
+  contents: write  # Дозволяє боту зберігати оновлений history.json у GitHub
 
 jobs:
-  build:
+  run-bot:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v2
+        uses: actions/set-up-python@v4
         with:
           python-version: '3.9'
 
       - name: Install dependencies
-        run: pip install pyTelegramBotAPI pytz
+        run: |
+          pip install pyTelegramBotAPI pytz
 
-      - name: Run bot
+      - name: Run Bot Logic
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           THREAD_ID: ${{ secrets.THREAD_ID }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: python bot.py
 
-      - name: Commit history
+      - name: Commit and Push history.json
         run: |
-          git config --global user.name "GitHub Action"
-          git config --global user.email "action@github.com"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add history.json
-          git commit -m "Update payment history" || echo "No changes to commit"
-          git push
+          # Комітимо тільки якщо файл змінився, щоб не було помилок
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Автоматичне оновлення історії оплат" && git push)
