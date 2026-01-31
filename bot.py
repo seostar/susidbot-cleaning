@@ -1,11 +1,15 @@
 import os, json, re, random, telebot, pytz
 from datetime import datetime
 
+# Отримуємо змінні та ПЕРЕТВОРЮЄМО НА ЧИСЛА (це виправить "не спрацювало")
 TOKEN = os.getenv('TELEGRAM_TOKEN')
-CHAT_ID = os.getenv('CHAT_ID')
-THREAD_ID = os.getenv('THREAD_ID')
-TIMEZONE = pytz.timezone('Europe/Kyiv')
+try:
+    CHAT_ID = int(os.getenv('CHAT_ID')) if os.getenv('CHAT_ID') else None
+    THREAD_ID = int(os.getenv('THREAD_ID')) if os.getenv('THREAD_ID') else None
+except Exception as e:
+    print(f"Помилка в ID чату або потоку: {e}")
 
+TIMEZONE = pytz.timezone('Europe/Kyiv')
 bot = telebot.TeleBot(TOKEN)
 
 MONTHS_MAP = {
@@ -32,50 +36,36 @@ def scan_and_update():
     now = datetime.now(TIMEZONE)
     active_apps = [str(a) for a in config.get('active_apartments', [])]
     
+    print("DEBUG: Починаю сканування повідомлень...")
     try:
         updates = bot.get_updates(limit=100, timeout=10)
         confirm_keywords = ['оплат', 'сплач', 'готов', 'є', 'есть', 'ок', '+', '✅', 'переказ', 'скинув', 'скинула', 'за']
 
         for u in updates:
-            if not u.message or str(u.message.chat.id) != str(CHAT_ID): continue
+            if not u.message or u.message.chat.id != CHAT_ID: continue
             text = u.message.text.lower() if u.message.text else ""
             
-            # 1. Беремо ПЕРШЕ число в тексті як номер квартири
             match = re.search(r'\d+', text)
             if not match: continue
             
             app_num = match.group()
-            
             if app_num in active_apps and (any(kw in text for kw in confirm_keywords) or "+" in text):
                 target_months = []
-                
-                # 2. Шукаємо назви місяців
                 for m_idx, roots in MONTHS_MAP.items():
                     if any(root in text for root in roots):
                         target_months.append(m_idx)
                 
-                # 3. Шукаємо "за X міс" (вирізаємо перше число, щоб не плутати з квартирою)
-                clean_text = text.replace(app_num, "", 1)
-                multi = re.search(r'(\d+)\s*(міс|мес|місяц)', clean_text)
-                if multi:
-                    count = int(multi.group(1))
-                    start_m = now.month if now.day < 25 else (now.month % 12) + 1
-                    for i in range(count):
-                        target_months.append(((start_m + i - 1) % 12) + 1)
-
                 if not target_months:
                     target_months = [now.month if now.day < 25 else (now.month % 12) + 1]
                 
                 for m_idx in set(target_months):
                     year = now.year
-                    # Якщо місяць минулий, а зараз кінець року — можливо це наступний рік
                     if m_idx < now.month and now.month >= 11: year += 1
-                    
                     key = f"{m_idx:02d}-{year}"
                     if key not in history: history[key] = []
                     if app_num not in history[key]:
                         history[key].append(app_num)
-                        print(f"DEBUG: Квартира {app_num} додана за {key}")
+                        print(f"DEBUG: Додано оплату кв {app_num} за {key}")
     except Exception as e:
         print(f"Scan error: {e}")
     
@@ -92,16 +82,20 @@ def send_all_messages(config, history, month_idx, year):
     active_list = sorted([str(a) for a in config.get('active_apartments', [])], key=int)
     unpaid = [a for a in active_list if a not in paid]
     
-    signature = "\n\n_🤖 beta-версія (бот може помилятися)_"
+    signature = "\n\n_🤖 beta-версія_"
 
     try:
         # 1. Реквізити
         main_text = config['templates'][month_idx-1].format(
             month_name=m_name, neighbors_list=", ".join(active_list), 
             card=config['card_details'], amount=config['monthly_fee']) + signature
+        
         m = bot.send_message(CHAT_ID, main_text, message_thread_id=THREAD_ID, parse_mode='Markdown')
-        bot.unpin_all_chat_messages(CHAT_ID)
-        bot.pin_chat_message(CHAT_ID, m.message_id)
+        
+        try:
+            bot.unpin_all_chat_messages(CHAT_ID)
+            bot.pin_chat_message(CHAT_ID, m.message_id)
+        except: pass
 
         # 2. Звіт
         report = random.choice(config['report_templates']).format(
@@ -116,6 +110,7 @@ def send_all_messages(config, history, month_idx, year):
                 month_name=m_name, unpaid_list=", ".join(unpaid), 
                 card=config['card_details']) + signature
             bot.send_message(CHAT_ID, remind, message_thread_id=THREAD_ID, parse_mode='Markdown')
+        print("DEBUG: Повідомлення успішно надіслані.")
     except Exception as e:
         print(f"Send error: {e}")
 
@@ -126,8 +121,14 @@ def run_logic():
     target_month = now.month if now.day < 25 else (now.month % 12) + 1
     target_year = now.year if not (now.month == 12 and target_month == 1) else now.year + 1
 
-    if os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch':
+    event = os.getenv('GITHUB_EVENT_NAME')
+    print(f"DEBUG: Запуск за подією: {event}")
+
+    # Надсилаємо повідомлення, якщо запущено вручну АБО якщо сьогодні 1, 11 або 19 число
+    if event == 'workflow_dispatch' or now.day in [1, 11, 19]:
         send_all_messages(config, history, target_month, target_year)
+    else:
+        print(f"DEBUG: Сьогодні {now.day} число. Повідомлення не відправляємо (тільки за розкладом 1, 11, 19).")
 
 if __name__ == "__main__":
     run_logic()
