@@ -1,6 +1,7 @@
 import os, json, re, random, telebot, pytz
 from datetime import datetime
 
+# Конфігурація
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 THREAD_ID = os.getenv('THREAD_ID')
@@ -8,6 +9,7 @@ TIMEZONE = pytz.timezone('Europe/Kyiv')
 
 bot = telebot.TeleBot(TOKEN)
 
+# Словник для розпізнавання місяців
 MONTHS_MAP = {
     1: ['січ', 'янв'], 2: ['лют', 'фев'], 3: ['берез', 'март'],
     4: ['квіт', 'апр'], 5: ['трав', 'май'], 6: ['черв', 'июн'],
@@ -78,7 +80,7 @@ def send_all_messages(config, history, month_idx, year):
     
     signature = "\n\n_🤖 beta-версія (бот може помилятися)_"
 
-    # 1. ЗБІР (ЗАКРІПЛЮЄТЬСЯ)
+    # 1. Основне повідомлення (ЗАКРІП)
     try:
         main_text = config['templates'][month_idx-1].format(
             month_name=m_name, 
@@ -93,10 +95,40 @@ def send_all_messages(config, history, month_idx, year):
     except Exception as e:
         print(f"Pin error: {e}")
 
-    # 2. ЗВІТ
+    # 2. Повідомлення-звіт
     report_text = random.choice(config['report_templates']).format(
         month_name=m_name, 
         paid_list=", ".join(sorted(paid, key=int)) if paid else "нікого ще немає", 
         unpaid_list=", ".join(unpaid) if unpaid else "всіх! 🎉"
     ) + signature
-    bot.send_message(CHAT_ID, report_text, message_thread_id=THREAD_ID
+    bot.send_message(CHAT_ID, report_text, message_thread_id=THREAD_ID, parse_mode='Markdown')
+
+    # 3. Нагадування (тільки якщо є боржники)
+    if unpaid:
+        remind_text = random.choice(config['reminder_templates']).format(
+            month_name=m_name, 
+            unpaid_list=", ".join(unpaid), 
+            card=config['card_details']
+        ) + signature
+        bot.send_message(CHAT_ID, remind_text, message_thread_id=THREAD_ID, parse_mode='Markdown')
+
+def run_logic():
+    history = scan_and_update()
+    config = load_json('config.json')
+    now = datetime.now(TIMEZONE)
+    
+    target_month = now.month if now.day < 25 else (now.month % 12) + 1
+    target_year = now.year if not (now.month == 12 and target_month == 1) else now.year + 1
+
+    if os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch':
+        send_all_messages(config, history, target_month, target_year)
+        return
+
+    day, hour = now.day, now.hour
+    if day == 1 and hour == 9:
+        send_all_messages(config, history, target_month, target_year)
+    elif day in [11, 19] and hour == 12:
+        send_all_messages(config, history, target_month, target_year)
+
+if __name__ == "__main__":
+    run_logic()
