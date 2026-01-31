@@ -9,7 +9,7 @@ TIMEZONE = pytz.timezone('Europe/Kyiv')
 
 bot = telebot.TeleBot(TOKEN)
 
-# Карта місяців для розпізнавання в тексті
+# Карта місяців для розпізнавання
 MONTHS_MAP = {
     1: ['січ', 'янв'], 2: ['лют', 'фев'], 3: ['берез', 'март'],
     4: ['квіт', 'апр'], 5: ['трав', 'май'], 6: ['черв', 'июн'],
@@ -32,10 +32,9 @@ def scan_and_update():
     config = load_json('config.json')
     history = load_json('history.json')
     now = datetime.now(TIMEZONE)
-    active_apps = [str(a) for a in config['active_apartments']]
+    active_apps = [str(a) for a in config.get('active_apartments', [])]
     
     try:
-        # Беремо останні повідомлення
         updates = bot.get_updates(limit=100, timeout=10)
         confirm_keywords = ['оплат', 'сплач', 'готов', 'є', 'есть', 'ок', '+', '✅', 'скину', 'переказ', 'опалч', 'оплае']
 
@@ -50,18 +49,15 @@ def scan_and_update():
                     if any(root in text for root in roots):
                         target_months.append(m_idx)
                 
-                # Логіка: якщо кінець місяця (після 25-го) і місяць не вказано - вважаємо за наступний
                 if not target_months:
                     target_months = [now.month if now.day < 25 else (now.month % 12) + 1]
                 
                 for num in found_numbers:
                     if num in active_apps:
                         for m_idx in target_months:
-                            # Визначаємо рік для ключа
                             year = now.year
                             if m_idx == 1 and now.month == 12: year += 1
                             if m_idx == 12 and now.month == 1: year -= 1
-                            
                             key = f"{m_idx:02d}-{year}"
                             if key not in history: history[key] = []
                             if num not in history[key]: history[key].append(num)
@@ -78,14 +74,56 @@ def send_all_messages(config, history, month_idx, year):
     m_name = ukr_months[month_idx]
     curr_key = f"{month_idx:02d}-{year}"
     
+    # БЕРЕМО ДАНІ ТІЛЬКИ З HISTORY
     paid = history.get(curr_key, [])
-    active_list = sorted([str(a) for a in config['active_apartments']], key=int)
+    active_list = sorted([str(a) for a in config.get('active_apartments', [])], key=int)
     unpaid = [a for a in active_list if a not in paid]
     
     signature = "\n\n_🤖 beta-версія (бот може помилятися)_"
 
-    # 1. Повідомлення про збір + АВТО-ЗАКРІП
+    # 1. Повідомлення про збір + ЗАКРІП
     try:
         main_text = config['templates'][month_idx-1].format(
-            month_name=m_name, neighbors_list=", ".join(active_list), 
-            card=config['card_details'], amount=config['monthly_fee
+            month_name=m_name, 
+            neighbors_list=", ".join(active_list), 
+            card=config['card_details'], 
+            amount=config['monthly_fee']
+        ) + signature
+        
+        main_msg = bot.send_message(CHAT_ID, main_text, message_thread_id=THREAD_ID, parse_mode='Markdown')
+        bot.unpin_all_chat_messages(CHAT_ID)
+        bot.pin_chat_message(CHAT_ID, main_msg.message_id)
+    except Exception as e:
+        print(f"Pin error: {e}")
+
+    # 2. Звіт (використовує тільки реальні дані з paid)
+    report_text = random.choice(config['report_templates']).format(
+        month_name=m_name, 
+        paid_list=", ".join(sorted(paid, key=int)) if paid else "нікого ще немає", 
+        unpaid_list=", ".join(unpaid) if unpaid else "всіх! 🎉"
+    ) + signature
+    bot.send_message(CHAT_ID, report_text, message_thread_id=THREAD_ID, parse_mode='Markdown')
+
+def run_logic():
+    history = scan_and_update()
+    config = load_json('config.json')
+    now = datetime.now(TIMEZONE)
+    
+    # Визначаємо місяць: якщо кінець січня, бот пише про лютий
+    target_month = now.month if now.day < 25 else (now.month % 12) + 1
+    target_year = now.year if not (now.month == 12 and target_month == 1) else now.year + 1
+
+    if os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch':
+        send_all_messages(config, history, target_month, target_year)
+        return
+
+    day, hour = now.day, now.hour
+    # Авто-запуск 1-го числа
+    if day == 1 and hour == 9:
+        send_all_messages(config, history, target_month, target_year)
+    # Нагадування 11 та 19 числа
+    elif day in [11, 19] and hour == 12:
+        send_all_messages(config, history, target_month, target_year)
+
+if __name__ == "__main__":
+    run_logic()
