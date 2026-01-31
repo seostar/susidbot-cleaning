@@ -1,6 +1,7 @@
 import json, datetime, schedule, time, threading
 from config import TOKEN, CHAT_ID, THREAD_ID, CURRENT_MONTH, PAYMENT_CARD, PAYMENT_AMOUNT, PAYMENT_DEADLINE
-from telegram import Bot, ParseMode, Update
+from telegram import Bot, Update
+from telegram.constants import ParseMode
 from telegram.ext import CommandHandler, Updater, CallbackContext
 from zoneinfo import ZoneInfo
 
