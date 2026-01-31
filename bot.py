@@ -11,17 +11,15 @@ CHAT_ID = os.getenv('CHAT_ID')
 THREAD_ID = os.getenv('THREAD_ID') 
 TIMEZONE = pytz.timezone('Europe/Kyiv')
 
-# Активні квартири
+# Список активних квартир
 ACTIVE_APARTMENTS = [6, 7, 11, 14, 17, 18, 19, 20, 22, 23, 26, 33, 34, 36, 39, 42, 43, 44, 46]
 
 bot = telebot.TeleBot(TOKEN)
 
 def get_month_ukr(month_idx):
-    months = {
-        1: "січень", 2: "лютий", 3: "березень", 4: "квітень", 5: "травень", 6: "червень",
-        7: "липень", 8: "серпень", 9: "вересень", 10: "жовтень", 11: "листопад", 12: "грудень"
-    }
-    return months[month_idx]
+    months = {1:"січень", 2:"лютий", 3:"березень", 4:"квітень", 5:"травень", 6:"червень",
+              7:"липень", 8:"серпень", 9:"вересень", 10:"жовтень", 11:"листопад", 12:"грудень"}
+    return months.get(month_idx, "місяць")
 
 def load_history():
     if os.path.exists('history.json'):
@@ -41,18 +39,23 @@ def scan_messages():
     
     if curr_key not in history: history[curr_key] = []
 
-    # Читаємо останні повідомлення
-    updates = bot.get_updates(limit=100)
+    # Отримуємо повідомлення
+    updates = bot.get_updates(limit=100, timeout=10)
+    
     for u in updates:
         if u.message and str(u.message.chat.id) == str(CHAT_ID):
-            if str(u.message.message_thread_id) == str(THREAD_ID):
+            # Перевірка на thread_id або General гілку
+            u_thread = str(u.message.message_thread_id) if u.message.message_thread_id else "None"
+            if u_thread == str(THREAD_ID) or THREAD_ID is None:
                 text = u.message.text.lower() if u.message.text else ""
                 match = re.search(r'(\d+)', text)
                 
-                if match and any(word in text for word in ['оплат', 'сплачено', 'ок', 'готово']):
+                if match:
                     num = str(match.group(1))
-                    if int(num) in ACTIVE_APARTMENTS and num not in history[curr_key]:
-                        history[curr_key].append(num)
+                    keywords = ['оплат', 'сплач', 'ок', 'готово', 'є', '+']
+                    if any(k in text for k in keywords) and int(num) in ACTIVE_APARTMENTS:
+                        if num not in history[curr_key]:
+                            history[curr_key].append(num)
     
     save_history(history)
     return history[curr_key]
@@ -65,33 +68,35 @@ def run_logic():
     unpaid = [str(a) for a in ACTIVE_APARTMENTS if str(a) not in paid]
     month_name = get_month_ukr(now.month)
 
-    # 1 ЧИСЛО - 09:00 - Вітання
+    # Перевірка на ручний запуск
+    is_manual = os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch'
+    send_text = ""
+
+    # 1 ЧИСЛО - 09:00
     if day == 1 and hour == 9:
-        text = (f"🌿 Почався {month_name} — дякуємо, що підтримуєте чистоту 💚\n\n"
-                f"💳 **5168 7451 4881 9912**\n💰 170 грн/міс (до 10 числа)\n"
-                f"📝 Призначення: «прибирання, кв. [номер]»\n\n"
-                f"✅ Після оплати напишіть: «кв. [номер] – оплачено»")
-        msg = bot.send_message(CHAT_ID, text, message_thread_id=THREAD_ID, parse_mode='Markdown')
-        try: bot.pin_chat_message(CHAT_ID, msg.message_id)
-        except: pass
-
-    # 11 ЧИСЛО - 12:00 - Звіт
-    elif day == 11 and hour == 12:
-        text = f"📊 **Звіт по оплатах за {month_name}:**\n\n"
-        text += "✅ Оплатили: " + (", ".join(paid) if paid else "поки що ніхто")
+        send_text = (f"🌿 Почався {month_name} — дякуємо за підтримку чистоти 💚\n\n"
+                     f"💳 **5168 7451 4881 9912**\n💰 170 грн/міс\n"
+                     f"✅ Після оплати: «кв. [номер] – оплачено»")
+    
+    # 11 ЧИСЛО - 12:00 або Ручний запуск
+    elif (day == 11 and hour == 12) or is_manual:
+        send_text = f"📊 **Звіт по оплатах ({month_name}):**\n\n✅ Оплатили: "
+        send_text += (", ".join(paid) if paid else "поки що ніхто")
         if unpaid:
-            text += f"\n\n⏳ Ще чекаємо на підтвердження від: {', '.join(unpaid)}"
-        bot.send_message(CHAT_ID, text, message_thread_id=THREAD_ID, parse_mode='Markdown')
+            send_text += f"\n\n⏳ Очікуємо: {', '.join(unpaid)}"
 
-    # 19 ЧИСЛО - 12:00 - Нагадування
+    # 19 ЧИСЛО - 12:00
     elif day == 19 and hour == 12:
         if unpaid:
-            text = (f"✨ Нагадуємо про оплату чистоти у нашому домі!\n\n"
-                    f"Будемо вдячні за внесок від кв: {', '.join(unpaid)} 💚\n"
-                    f"Це допомагає підтримувати наш під'їзд у гарному стані.")
-            bot.send_message(CHAT_ID, text, message_thread_id=THREAD_ID)
+            send_text = f"✨ Нагадуємо про оплату прибирання! Кв: {', '.join(unpaid)} 💚"
 
-    # Останній день місяця 23:00 - Зняти закріп
+    if send_text:
+        msg = bot.send_message(CHAT_ID, send_text, message_thread_id=THREAD_ID, parse_mode='Markdown')
+        if day == 1 and not is_manual:
+            try: bot.pin_chat_message(CHAT_ID, msg.message_id)
+            except: pass
+
+    # Анпін 28 числа о 23:00
     if day >= 28 and hour == 23:
         try: bot.unpin_all_chat_messages(CHAT_ID)
         except: pass
