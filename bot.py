@@ -1,9 +1,14 @@
-import json, datetime, schedule, time, threading
+import json
+import datetime
+import schedule
+import time
+import threading
+from zoneinfo import ZoneInfo
+
 from config import TOKEN, CHAT_ID, THREAD_ID, CURRENT_MONTH, PAYMENT_CARD, PAYMENT_AMOUNT, PAYMENT_DEADLINE
 from telegram import Bot, Update
 from telegram.constants import ParseMode
-from telegram.ext import CommandHandler, Updater, CallbackContext
-from zoneinfo import ZoneInfo
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # --- Завантаження JSON ---
 def load_json(file):
@@ -22,8 +27,6 @@ templates = load_json("messages_template.json")
 active_apts = load_json("active_apartments.json")
 
 bot = Bot(TOKEN)
-updater = Updater(TOKEN, use_context=True)
-dispatcher = updater.dispatcher
 
 # --- Функції парсингу повідомлень ---
 def parse_payment(message):
@@ -92,16 +95,18 @@ def send_reminder():
     print("[INFO] Нагадування відправлено.")
 
 # --- Команда /send_now ---
-def send_now(update: Update, context: CallbackContext):
+async def send_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     handle_updates()  # оновлюємо історію перед повідомленнями
     send_welcome()
     send_report()
     send_reminder()
-    update.message.reply_text("✅ Всі тестові повідомлення відправлені!")
+    await update.message.reply_text("✅ Всі тестові повідомлення відправлені!")
 
-dispatcher.add_handler(CommandHandler("send_now", send_now))
+# --- Створення застосунку і хендлер ---
+app = ApplicationBuilder().token(TOKEN).build()
+app.add_handler(CommandHandler("send_now", send_now))
 
-# --- Планування щоденного оновлення і повідомлень ---
+# --- Планування щоденного оновлення ---
 def schedule_jobs():
     tz = ZoneInfo("Europe/Kiev")
     schedule.every().day.at("23:00").do(handle_updates)
@@ -116,7 +121,4 @@ threading.Thread(target=schedule_jobs, daemon=True).start()
 
 # --- Основний цикл ---
 print("[INFO] SusidBot-Cleaning запущено...")
-updater.start_polling()
-while True:
-    handle_updates()
-    time.sleep(5)
+app.run_polling()
