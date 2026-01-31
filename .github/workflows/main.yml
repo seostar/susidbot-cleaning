@@ -2,7 +2,7 @@ name: Cleaner Bot
 
 on:
   schedule:
-    - cron: '56 17 * * *'  # 19:56 за Києвом щодня
+    - cron: '0 18 * * *'  # 20:00 за Києвом (18:00 UTC) щодня
   workflow_dispatch:
 
 jobs:
