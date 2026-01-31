@@ -2,10 +2,13 @@ name: Cleaning Control Bot
 
 on:
   schedule:
-    - cron: '0 7 * * *'   # 09:00 за Києвом (для 1 числа)
-    - cron: '0 10 * * *'  # 12:00 за Києвом (для 11 та 19 числа)
-    - cron: '0 21 * * *'  # 23:00 за Києвом (для щоденного оновлення історії)
-  workflow_dispatch:      # Для ручного запуску
+    - cron: '0 7 * * *'   # 09:00 за Києвом
+    - cron: '0 10 * * *'  # 12:00 за Києвом
+    - cron: '0 21 * * *'  # 23:00 за Києвом
+  workflow_dispatch:
+
+permissions:
+  contents: write  # ДОДАЙТЕ ЦЕЙ РЯДОК
 
 jobs:
   build:
@@ -13,26 +16,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v3
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
-
-      - name: Install Dependencies
-        run: pip install pyTelegramBotAPI pytz
-
-      - name: Run Bot
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
-          THREAD_ID: ${{ secrets.THREAD_ID }}
-        run: python bot.py
-
-      - name: Commit and Push History
-        run: |
-          git config --local user.email "bot@github.com"
-          git config --local user.name "CleaningBot"
-          git add history.json
-          git commit -m "sync payments" || echo "No changes"
-          git push
+          token: ${{ secrets.GITHUB_TOKEN }} # Додано для стабільності
+# ... далі весь інший код без змін ...
