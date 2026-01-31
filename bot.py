@@ -36,31 +36,48 @@ def scan_and_update():
     
     try:
         updates = bot.get_updates(limit=100, timeout=10)
-        confirm_keywords = ['оплат', 'сплач', 'готов', 'є', 'есть', 'ок', '+', '✅', 'скину', 'переказ', 'опалч', 'оплае']
+        confirm_keywords = ['оплат', 'сплач', 'готов', 'є', 'есть', 'ок', '+', '✅', 'скину', 'переказ', 'опалч', 'оплае', 'оплатила']
 
         for u in updates:
             if not u.message or str(u.message.chat.id) != str(CHAT_ID): continue
             text = u.message.text.lower() if u.message.text else ""
+            
+            # Шукаємо всі числа (номери квартир)
             found_numbers = re.findall(r'(\d+)', text)
             
             if any(kw in text for kw in confirm_keywords) or "+" in text:
                 target_months = []
+                
+                # 1. Перевіряємо наявність назв місяців у тексті
                 for m_idx, roots in MONTHS_MAP.items():
                     if any(root in text for root in roots):
                         target_months.append(m_idx)
                 
+                # 2. Перевіряємо фразу "за X міс"
+                multi_month_match = re.search(r'за (\d+) міс', text)
+                if multi_month_match:
+                    count = int(multi_month_match.group(1))
+                    start_m = now.month if now.day < 25 else (now.month % 12) + 1
+                    for i in range(count):
+                        m = ((start_m + i - 1) % 12) + 1
+                        if m not in target_months: target_months.append(m)
+                
+                # 3. Якщо нічого не вказано - беремо цільовий місяць
                 if not target_months:
                     target_months = [now.month if now.day < 25 else (now.month % 12) + 1]
                 
                 for num in found_numbers:
-                    if num in active_apps:
+                    # Число має бути в списку активних квартир і не бути частиною дати/кількості місяців
+                    if num in active_apps and num not in [str(m) for m in range(1, 13)] or num in active_apps:
                         for m_idx in target_months:
                             year = now.year
-                            if m_idx == 1 and now.month == 12: year += 1
-                            if m_idx == 12 and now.month == 1: year -= 1
+                            if m_idx < now.month and now.month >= 10: year += 1 # Наступний рік
                             key = f"{m_idx:02d}-{year}"
                             if key not in history: history[key] = []
-                            if num not in history[key]: history[key].append(num)
+                            if num not in history[key]: 
+                                history[key].append(num)
+                                print(f"Added payment: App {num} for {key}")
+                                
     except Exception as e:
         print(f"Scan error: {e}")
     
@@ -80,37 +97,30 @@ def send_all_messages(config, history, month_idx, year):
     
     signature = "\n\n_🤖 beta-версія (бот може помилятися)_"
 
-    # 1. Основне повідомлення (ЗАКРІП)
     try:
+        # 1. Збір + Закріп
         main_text = config['templates'][month_idx-1].format(
-            month_name=m_name, 
-            neighbors_list=", ".join(active_list), 
-            card=config['card_details'], 
-            amount=config['monthly_fee']
-        ) + signature
-        
+            month_name=m_name, neighbors_list=", ".join(active_list), 
+            card=config['card_details'], amount=config['monthly_fee']) + signature
         main_msg = bot.send_message(CHAT_ID, main_text, message_thread_id=THREAD_ID, parse_mode='Markdown')
         bot.unpin_all_chat_messages(CHAT_ID)
         bot.pin_chat_message(CHAT_ID, main_msg.message_id)
-    except Exception as e:
-        print(f"Pin error: {e}")
 
-    # 2. Повідомлення-звіт
-    report_text = random.choice(config['report_templates']).format(
-        month_name=m_name, 
-        paid_list=", ".join(sorted(paid, key=int)) if paid else "нікого ще немає", 
-        unpaid_list=", ".join(unpaid) if unpaid else "всіх! 🎉"
-    ) + signature
-    bot.send_message(CHAT_ID, report_text, message_thread_id=THREAD_ID, parse_mode='Markdown')
-
-    # 3. Нагадування (тільки якщо є боржники)
-    if unpaid:
-        remind_text = random.choice(config['reminder_templates']).format(
+        # 2. Звіт
+        report_text = random.choice(config['report_templates']).format(
             month_name=m_name, 
-            unpaid_list=", ".join(unpaid), 
-            card=config['card_details']
-        ) + signature
-        bot.send_message(CHAT_ID, remind_text, message_thread_id=THREAD_ID, parse_mode='Markdown')
+            paid_list=", ".join(sorted(paid, key=int)) if paid else "нікого ще немає", 
+            unpaid_list=", ".join(unpaid) if unpaid else "всіх! 🎉") + signature
+        bot.send_message(CHAT_ID, report_text, message_thread_id=THREAD_ID, parse_mode='Markdown')
+
+        # 3. Нагадування
+        if unpaid:
+            remind_text = random.choice(config['reminder_templates']).format(
+                month_name=m_name, unpaid_list=", ".join(unpaid), 
+                card=config['card_details']) + signature
+            bot.send_message(CHAT_ID, remind_text, message_thread_id=THREAD_ID, parse_mode='Markdown')
+    except Exception as e:
+        print(f"Send error: {e}")
 
 def run_logic():
     history = scan_and_update()
