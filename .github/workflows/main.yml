@@ -1,29 +1,31 @@
-name: Cleaner Bot
+name: OSBB Payments Bot
+
 on:
   schedule:
-    - cron: '0 21 * * *'      # Щодня о 23:00 (оновлення історії)
-    - cron: '0 7 1 * *'       # 1-ше число о 09:00 (звіт)
-    - cron: '0 10 11 * *'     # 11-те число о 12:00 (звіт)
-    - cron: '0 10 19 * *'     # 19-те число о 12:00 (звіт)
-  workflow_dispatch:          # Кнопка для ручного запуску
-
-permissions:
-  contents: write
+    # 1-ше число, 09:00 за Києвом (07:00 UTC)
+    - cron: '0 7 1 * *'
+    # 11 та 19 числа, 12:00 за Києвом (10:00 UTC)
+    - cron: '0 10 11,19 * *'
+    # Щодня о 23:00 (21:00 UTC) для тихого збору даних
+    - cron: '0 21 * * *'
+  workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          fetch-depth: 0 # Потрібно для коректного git push
+          python-version: '3.9'
 
-      - uses: actions/setup-python@v4
-        with: {python-version: '3.9'}
+      - name: Install dependencies
+        run: pip install pyTelegramBotAPI pytz
 
-      - run: pip install pyTelegramBotAPI pytz
-
-      - name: Run
+      - name: Run bot script
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
@@ -31,16 +33,10 @@ jobs:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: python bot.py
 
-      - name: Sync
+      - name: Commit and push changes
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
           git add history.json
-          # Якщо файл змінився — зберігаємо, якщо ні — ідемо далі
-          if ! git diff --cached --quiet; then
-            git commit -m "🤖 Автоматичне оновлення історії оплат"
-            git pull --rebase origin main
-            git push
-          else
-            echo "Змін у history.json немає."
-          fi
+          git commit -m "Auto-update history [skip ci]" || echo "No changes to commit"
+          git push
