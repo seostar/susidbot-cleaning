@@ -2,17 +2,27 @@ name: OSBB Payments Bot
 
 on:
   schedule:
-    # 1-ше число, 09:00 за Києвом (07:00 UTC)
+    # УВАГА: час вказано по UTC (Київ -2 години)
+    
+    # 07:00 UTC = 09:00 за Києвом (1-ше число кожного місяця)
     - cron: '0 7 1 * *'
-    # 11 та 19 числа, 12:00 за Києвом (10:00 UTC)
+    
+    # 10:00 UTC = 12:00 за Києвом (11 та 19 числа кожного місяця)
     - cron: '0 10 11,19 * *'
-    # Щодня о 23:00 (21:00 UTC) для тихого збору даних
+    
+    # 21:00 UTC = 23:00 за Києвом (щоденне тихе сканування чату)
     - cron: '0 21 * * *'
-  workflow_dispatch:
+    
+  workflow_dispatch: # Дозволяє запускати бота вручну кнопкою "Run workflow"
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    
+    # Дозволяємо запис у репозиторій для оновлення history.json
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -23,13 +33,16 @@ jobs:
           python-version: '3.9'
 
       - name: Install dependencies
-        run: pip install pyTelegramBotAPI pytz
+        run: |
+          pip install pyTelegramBotAPI pytz
 
       - name: Run bot script
         env:
+          # Ці секрети мають бути прописані в Settings -> Secrets and variables -> Actions
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           THREAD_ID: ${{ secrets.THREAD_ID }}
+          # Передаємо назву події, щоб бот знав, чи робити звіт
           GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: python bot.py
 
@@ -38,5 +51,6 @@ jobs:
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
           git add history.json
+          # Якщо змін немає, просто виводимо повідомлення, щоб не ламати workflow
           git commit -m "Auto-update history [skip ci]" || echo "No changes to commit"
           git push
