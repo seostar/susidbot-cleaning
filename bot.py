@@ -31,12 +31,25 @@ MONTHS_MAP = {
 def load_json(path):
     if os.path.exists(path):
         with open(path, 'r', encoding='utf-8') as f:
-            try: return json.load(f)
+            try:
+                data = json.load(f)
+                # Чистимо дані від пробілів при завантаженні
+                cleaned = {}
+                for k, v in data.items():
+                    if isinstance(v, list):
+                        cleaned[k] = [str(x).strip() for x in v]
+                return cleaned
             except: return {}
     return {}
 
 def save_json(path, data):
     with open(path, 'w', encoding='utf-8') as f:
+        # Сортуємо та чистимо перед збереженням
+        for key in data:
+            if isinstance(data[key], list):
+                # Тільки унікальні, чисті номери, відсортовані як числа
+                unique_apps = list(set(str(x).strip() for x in data[key] if str(x).strip()))
+                data[key] = sorted(unique_apps, key=lambda x: int(x) if x.isdigit() else 999)
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 def get_target_period(now):
@@ -47,9 +60,9 @@ def get_target_period(now):
 # --- ОСНОВНА ЛОГІКА СКАНУВАННЯ ---
 
 def scan_payments(config, history, now):
-    active_apps = [str(a) for a in config.get('active_apartments', [])]
+    active_apps = [str(a).strip() for a in config.get('active_apartments', [])]
     
-    print("🔍 Починаю сканування чату...")
+    print("🔍 Сканування повідомлень...")
     try:
         updates = bot.get_updates(limit=100, timeout=10)
         for u in updates:
@@ -60,16 +73,14 @@ def scan_payments(config, history, now):
             match_app = re.search(r'\d+', text)
             
             if match_app:
-                app_num = match_app.group()
+                app_num = match_app.group().strip()
                 if app_num in active_apps:
                     found_months = []
                     
-                    # Шукаємо назви місяців
                     for m_idx, roots in MONTHS_MAP.items():
                         if any(root in text for root in roots):
                             found_months.append(m_idx)
                     
-                    # Обробка "за X міс"
                     if not found_months:
                         multi = re.search(r'(\d+)\s*(міс|мес)', text.replace(app_num, "", 1))
                         if multi:
@@ -78,7 +89,6 @@ def scan_payments(config, history, now):
                             for i in range(count):
                                 found_months.append(((start_m + i - 1) % 12) + 1)
                     
-                    # ПРАВИЛО: Якщо місяці не вказані, але є номер — це поточний місяць
                     target_months = found_months if found_months else [get_target_period(now)[0]]
 
                     for m_idx in set(target_months):
@@ -87,8 +97,6 @@ def scan_payments(config, history, now):
                             year += 1
                         
                         key = f"{m_idx:02d}-{year}"
-                        
-                        # Тільки додаємо, нічого не видаляємо
                         if key not in history: history[key] = []
                         if app_num not in history[key]:
                             history[key].append(app_num)
@@ -108,11 +116,14 @@ def send_reports(config, history, month_idx, year):
     m_name = ukr_months[month_idx]
     key = f"{month_idx:02d}-{year}"
     
-    paid = sorted(list(set(history.get(key, []))), key=int)
-    active = sorted([str(a) for a in config.get('active_apartments', [])], key=int)
-    unpaid = [a for a in active if a not in paid]
+    # Отримуємо чисті списки для порівняння
+    paid = [str(x).strip() for x in history.get(key, [])]
+    active = [str(a).strip() for a in config.get('active_apartments', [])]
     
-    sig = "\n\n_🤖 beta: можу помилятись, перевіряйте._"
+    paid_sorted = sorted(list(set(paid)), key=lambda x: int(x) if x.isdigit() else 999)
+    unpaid = sorted([a for a in active if a not in paid], key=lambda x: int(x) if x.isdigit() else 999)
+    
+    sig = "\n\n_🤖 Бот автоматичної перевірки оплат._"
 
     try:
         # 1. Реквізити
@@ -129,7 +140,7 @@ def send_reports(config, history, month_idx, year):
         # 2. Звіт
         report = random.choice(config['report_templates']).format(
             month_name=m_name, 
-            paid_list=", ".join(paid) if paid else "поки ніхто", 
+            paid_list=", ".join(paid_sorted) if paid_sorted else "поки ніхто", 
             unpaid_list=", ".join(unpaid) if unpaid else "всі! 🎉")
         bot.send_message(CHAT_ID, report + sig, message_thread_id=THREAD_ID, parse_mode='Markdown')
 
@@ -140,7 +151,7 @@ def send_reports(config, history, month_idx, year):
             bot.send_message(CHAT_ID, remind + sig, message_thread_id=THREAD_ID, parse_mode='Markdown')
             
     except Exception as e:
-        print(f"⚠️ Помилка: {e}")
+        print(f"⚠️ Помилка відправки: {e}")
 
 # --- ТОЧКА ВХОДУ ---
 
@@ -149,16 +160,13 @@ def run():
     config = load_json('config.json')
     history = load_json('history.json')
 
+    # Оновлюємо базу
     updated_history = scan_payments(config, history, now)
     save_json('history.json', updated_history)
 
+    # Відправляємо звіт (завжди при запуску через YML)
     m, y = get_target_period(now)
-    
-    is_manual = (os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch')
-    is_report_hour = now.hour in [9, 12]
-
-    if is_manual or is_report_hour:
-        send_reports(config, updated_history, m, y)
+    send_reports(config, updated_history, m, y)
 
 if __name__ == "__main__":
     run()
