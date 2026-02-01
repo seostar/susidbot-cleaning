@@ -81,8 +81,10 @@ def scan_payments(config, history, now):
     return history
 
 def send_reports(config, history, month_idx, year):
-    ukr_months = {1:"січень", 2:"лютий", 3:"березень", 4:"квітень", 5:"травень", 6:"червень", 
-                  7:"липень", 8:"серпень", 9:"вересень", 10:"жовтень", 11:"листопад", 12:"грудень"}
+    ukr_months = {
+        1:"січень", 2:"лютий", 3:"березень", 4:"квітень", 5:"травень", 6:"червень", 
+        7:"липень", 8:"серпень", 9:"вересень", 10:"жовтень", 11:"листопад", 12:"грудень"
+    }
     m_name = ukr_months[month_idx]
     key = f"{month_idx:02d}-{year}"
     active = sorted([str(a).strip() for a in config.get('active_apartments', [])], key=int)
@@ -90,10 +92,11 @@ def send_reports(config, history, month_idx, year):
     paid_sorted = sorted(list(set(str(x).strip() for x in paid)), key=int)
     unpaid = [a for a in active if a not in paid_sorted]
     
-    # ФІНАЛЬНИЙ ПІДПИС
+    # ПІДПИС
     sig = "\n\n_beta: можу помилятись, перевіряйте._"
 
     try:
+        # 1. Реквізити
         text_tpl = config['templates'][month_idx-1].format(
             month_name=m_name, neighbors_list=", ".join(active), 
             card=config['card_details'], amount=config['monthly_fee'])
@@ -103,12 +106,14 @@ def send_reports(config, history, month_idx, year):
             bot.pin_chat_message(CHAT_ID, m.message_id)
         except: pass
 
+        # 2. Звіт
         report = random.choice(config['report_templates']).format(
             month_name=m_name, 
             paid_list=", ".join(paid_sorted) if paid_sorted else "поки ніхто", 
             unpaid_list=", ".join(unpaid) if unpaid else "всі! 🎉")
         bot.send_message(CHAT_ID, report + sig, message_thread_id=THREAD_ID, parse_mode='Markdown')
 
+        # 3. Нагадування
         if unpaid:
             remind = random.choice(config['reminder_templates']).format(
                 month_name=m_name, unpaid_list=", ".join(unpaid), card=config['card_details'])
@@ -118,4 +123,30 @@ def send_reports(config, history, month_idx, year):
 
 def run():
     now = datetime.now(TIMEZONE)
-    config = load
+    config = load_json('config.json')
+    history = load_json('history.json')
+
+    # 1. Спершу завжди скануємо чат
+    updated_history = scan_payments(config, history, now)
+    save_json('history.json', updated_history)
+
+    # 2. Визначаємо, чи треба писати в чат
+    event = os.getenv('GITHUB_EVENT_NAME')
+    
+    # Умови для відправки звіту:
+    # - натиснута кнопка вручну (workflow_dispatch)
+    # - або 1-ше число 09:00
+    # - або 11, 19 число 12:00
+    is_manual = (event == 'workflow_dispatch')
+    is_scheduled_report = (now.day == 1 and now.hour == 9) or \
+                          (now.day in [11, 19] and now.hour == 12)
+
+    if is_manual or is_scheduled_report:
+        print("🚀 Умова виконана! Відправляємо звіт у Telegram...")
+        m, y = get_target_period(now)
+        send_reports(config, updated_history, m, y)
+    else:
+        print(f"🤫 Тихий режим (День:{now.day} Година:{now.hour}). Дані оновлено, чат не турбуємо.")
+
+if __name__ == "__main__":
+    run()
