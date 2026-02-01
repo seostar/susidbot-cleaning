@@ -19,6 +19,7 @@ except (ValueError, TypeError):
 
 bot = telebot.TeleBot(TOKEN)
 
+# Словник для пошуку місяців
 MONTHS_MAP = {
     1: ['січ', 'янв'], 2: ['лют', 'фев'], 3: ['берез', 'март'],
     4: ['квіт', 'апр'], 5: ['трав', 'май'], 6: ['черв', 'июн'],
@@ -29,133 +30,30 @@ MONTHS_MAP = {
 # --- ДОПОМІЖНІ ФУНКЦІЇ ---
 
 def load_json(path):
+    """Завантажує JSON або повертає порожній словник при помилці"""
     if os.path.exists(path):
         with open(path, 'r', encoding='utf-8') as f:
-            try: 
+            try:
                 data = json.load(f)
                 return data if isinstance(data, dict) else {}
-            except: return {}
+            except Exception as e:
+                print(f"⚠️ Помилка читання {path}: {e}")
+                return {}
     return {}
 
 def save_json(path, data):
+    """Зберігає дані, сортуючи номери квартир для зручності"""
     with open(path, 'w', encoding='utf-8') as f:
+        # Сортуємо списки квартир перед записом у файл
+        for key in data:
+            if isinstance(data[key], list):
+                data[key] = sorted(list(set(str(x) for x in data[key])), key=int)
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 def get_target_period(now):
+    """Визначає місяць оплати (після 25 числа — наступний)"""
     m = now.month if now.day < 25 else (now.month % 12) + 1
     y = now.year if not (now.month == 12 and m == 1) else now.year + 1
     return m, y
 
-# --- ЛОГІКА СКАНУВАННЯ ---
-
-def scan_payments(config, history, now):
-    active_apps = [str(a) for a in config.get('active_apartments', [])]
-    
-    print("🔍 Сканую нові повідомлення...")
-    try:
-        updates = bot.get_updates(limit=100, timeout=10)
-        for u in updates:
-            if not u.message or u.message.chat.id != CHAT_ID:
-                continue
-            
-            text = (u.message.text or "").lower()
-            match_app = re.search(r'\d+', text)
-            
-            if match_app:
-                app_num = match_app.group()
-                if app_num in active_apps:
-                    found_months = []
-                    
-                    for m_idx, roots in MONTHS_MAP.items():
-                        if any(root in text for root in roots):
-                            found_months.append(m_idx)
-                    
-                    if not found_months:
-                        multi = re.search(r'(\d+)\s*(міс|мес)', text.replace(app_num, "", 1))
-                        if multi:
-                            count = int(multi.group(1))
-                            start_m, _ = get_target_period(now)
-                            for i in range(count):
-                                found_months.append(((start_m + i - 1) % 12) + 1)
-                    
-                    target_months = found_months if found_months else [get_target_period(now)[0]]
-
-                    for m_idx in set(target_months):
-                        _, year = get_target_period(now)
-                        if m_idx < now.month and now.month >= 11:
-                            year += 1
-                        
-                        key = f"{m_idx:02d}-{year}"
-                        
-                        if key not in history:
-                            history[key] = []
-                        
-                        if app_num not in history[key]:
-                            history[key].append(app_num)
-                            print(f"➕ Додано: кв. {app_num} ({key})")
-                            
-    except Exception as e:
-        print(f"⚠️ Помилка: {e}")
-    
-    return history
-
-# --- ЛОГІКА ПОВІДОМЛЕНЬ ---
-
-def send_reports(config, history, month_idx, year):
-    ukr_months = {
-        1:"січень", 2:"лютий", 3:"березень", 4:"квітень", 5:"травень", 6:"червень", 
-        7:"липень", 8:"серпень", 9:"вересень", 10:"жовтень", 11:"листопад", 12:"грудень"
-    }
-    m_name = ukr_months[month_idx]
-    key = f"{month_idx:02d}-{year}"
-    
-    paid = sorted(list(set(history.get(key, []))), key=int)
-    active = sorted([str(a) for a in config.get('active_apartments', [])], key=int)
-    unpaid = [a for a in active if a not in paid]
-    
-    sig = "\n\n_🤖 beta: можу помилятись, перевіряйте._"
-
-    try:
-        text_tpl = config['templates'][month_idx-1].format(
-            month_name=m_name, neighbors_list=", ".join(active), 
-            card=config['card_details'], amount=config['monthly_fee'])
-        m = bot.send_message(CHAT_ID, text_tpl + sig, message_thread_id=THREAD_ID, parse_mode='Markdown')
-        
-        try:
-            bot.unpin_all_chat_messages(CHAT_ID)
-            bot.pin_chat_message(CHAT_ID, m.message_id)
-        except: pass
-
-        report = random.choice(config['report_templates']).format(
-            month_name=m_name, 
-            paid_list=", ".join(paid) if paid else "поки ніхто", 
-            unpaid_list=", ".join(unpaid) if unpaid else "всі! 🎉")
-        bot.send_message(CHAT_ID, report + sig, message_thread_id=THREAD_ID, parse_mode='Markdown')
-
-        if unpaid:
-            remind = random.choice(config['reminder_templates']).format(
-                month_name=m_name, unpaid_list=", ".join(unpaid), card=config['card_details'])
-            bot.send_message(CHAT_ID, remind + sig, message_thread_id=THREAD_ID, parse_mode='Markdown')
-            
-    except Exception as e:
-        print(f"⚠️ Помилка: {e}")
-
-# --- ЗАПУСК ---
-
-def run():
-    now = datetime.now(TIMEZONE)
-    config = load_json('config.json')
-    history = load_json('history.json')
-
-    updated_history = scan_payments(config, history, now)
-    save_json('history.json', updated_history)
-
-    m, y = get_target_period(now)
-    is_manual = (os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch')
-    is_report_hour = now.hour in [9, 12]
-
-    if is_manual or is_report_hour:
-        send_reports(config, updated_history, m, y)
-
-if __name__ == "__main__":
-    run()
+# ---
