@@ -1,7 +1,6 @@
 import os
 import json
 import re
-import random
 import telebot
 import pytz
 from datetime import datetime
@@ -10,17 +9,15 @@ from datetime import datetime
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 TIMEZONE = pytz.timezone('Europe/Kyiv')
 
-# Налаштування ID (з обробкою помилок)
 try:
     CHAT_ID = int(os.getenv('CHAT_ID')) if os.getenv('CHAT_ID') else None
     THREAD_ID = int(os.getenv('THREAD_ID')) if os.getenv('THREAD_ID') and os.getenv('THREAD_ID').strip() else None
 except (ValueError, TypeError) as e:
-    print(f"❌ Помилка в ID чату або теми: {e}")
+    print(f"❌ Помилка ID: {e}")
     exit(1)
 
 bot = telebot.TeleBot(TOKEN)
 
-# Карта місяців для розпізнавання тексту
 MONTHS_MAP = {
     1: ['січ', 'янв'], 2: ['лют', 'фев'], 3: ['берез', 'март'],
     4: ['квіт', 'апр'], 5: ['трав', 'май'], 6: ['черв', 'июн'],
@@ -28,8 +25,7 @@ MONTHS_MAP = {
     10: ['жовт', 'окт'], 11: ['лист', 'нояб'], 12: ['груд', 'дек']
 }
 
-# --- ДОПОМІЖНІ ФУНКЦІЇ ---
-
+# --- РОБОТА З ФАЙЛАМИ ---
 def load_json(path):
     if os.path.exists(path):
         with open(path, 'r', encoding='utf-8') as f:
@@ -41,141 +37,214 @@ def save_json(path, data):
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-def get_target_period(now):
-    """Межа 25-го числа: до 25 — поточний місяць, після — наступний."""
-    m = now.month if now.day < 25 else (now.month % 12) + 1
-    y = now.year if not (now.month == 12 and m == 1) else now.year + 1
-    return m, y
+def get_billing_period(now):
+    """
+    Логіка:
+    - До 25 числа — працюємо з поточним місяцем.
+    - Після 25 числа — вважаємо, що оплати йдуть вже за наступний.
+    Повертає (month, year) "цільового" місяця збору.
+    """
+    if now.day >= 25:
+        # Наступний місяць
+        if now.month == 12:
+            return 1, now.year + 1
+        else:
+            return now.month + 1, now.year
+    else:
+        # Поточний місяць
+        return now.month, now.year
 
-# --- ЛОГІКА СКАНУВАННЯ ---
-
-def scan_payments(config, history, now):
+# --- СМАРТ-СКАНУВАННЯ ---
+def scan_chat(config, history, now):
     active_apps = [str(a) for a in config.get('active_apartments', [])]
-    # Розширений список ключів, щоб "44 за 2 міс" розпізнавалось як оплата
-    confirm_keywords = [
-        'оплат', 'сплач', 'готов', 'є', 'есть', 'ок', '+', '✅', 
-        'переказ', 'скинув', 'скинула', 'за', 'міс', 'мес', 'грн'
-    ]
-
-    print("🔍 Починаю сканування останніх повідомлень...")
+    
+    # Ключові слова, що це точно про оплату
+    valid_triggers = ['опл', 'спла', 'скин', 'перек', '✅', '➕', 'плюс', 'грн', 'за']
+    
+    print("🔍 Сканую чат (останні 100 повідомлень)...")
+    
     try:
+        # Беремо останні повідомлення
         updates = bot.get_updates(limit=100, timeout=10)
-        for u in updates:
+        # Обертаємо список, щоб спочатку обробляти старіші, потім новіші (логічніше для історії)
+        for u in reversed(updates):
             if not u.message or u.message.chat.id != CHAT_ID:
                 continue
-
-            text = (u.message.text or "").lower()
-            match_app = re.search(r'\d+', text)
             
-            if match_app:
-                app_num = match_app.group()
-                # Перевіряємо, чи квартира активна та чи є підтвердження оплати
-                if app_num in active_apps and any(kw in text for kw in confirm_keywords):
-                    target_months = []
+            text = (u.message.text or "").lower()
+            
+            # 1. Шукаємо номери квартир у повідомленні
+            # Знаходить всі числа, які є в списку active_apartments
+            found_apps = []
+            words = re.findall(r'\d+', text)
+            for w in words:
+                if w in active_apps:
+                    found_apps.append(w)
+            
+            if not found_apps:
+                continue
 
-                    # 1. Шукаємо конкретні назви місяців
-                    for m_idx, roots in MONTHS_MAP.items():
-                        if any(root in text for root in roots):
-                            target_months.append(m_idx)
+            # 2. Перевіряємо, чи це повідомлення про оплату
+            is_payment = any(t in text for t in valid_triggers)
+            # Додаткова евристика: якщо просто число і емодзі або коротка відповідь
+            if not is_payment and len(text) < 10: 
+                is_payment = True 
+            
+            if is_payment:
+                # 3. Визначаємо, за які місяці оплата
+                target_keys = []
+                
+                # А) Перевірка на конкретні назви місяців у тексті (пріоритет)
+                explicit_months = []
+                for m_idx, roots in MONTHS_MAP.items():
+                    if any(root in text for root in roots):
+                        explicit_months.append(m_idx)
+                
+                # Б) Перевірка на "за 2 місяці", "за 3 мес"
+                multi_match = re.search(r'(\d+)\s*(міс|мес)', text)
+                months_count = 1
+                if multi_match:
+                    months_count = int(multi_match.group(1))
 
-                    # 2. Шукаємо конструкції "за X міс" (наприклад, "44 за 2 міс")
-                    clean_text = text.replace(app_num, "", 1)
-                    multi = re.search(r'(\d+)\s*(міс|мес|місяц)', clean_text)
-                    if multi:
-                        count = int(multi.group(1))
-                        start_m, _ = get_target_period(now)
-                        for i in range(count):
-                            target_months.append(((start_m + i - 1) % 12) + 1)
+                # В) Формуємо ключі (MM-YYYY)
+                current_billing_m, current_billing_y = get_billing_period(now)
+                
+                if explicit_months:
+                    # Якщо вказані конкретні місяці (напр. "за січень і лютий")
+                    for m in explicit_months:
+                        # Спроба вгадати рік. Якщо зараз грудень (12), а платять за січень (1) — це наст. рік
+                        y = current_billing_y
+                        if now.month == 12 and m < 6: y += 1 
+                        if now.month < 6 and m > 9: y -= 1 # Рідкісний кейс (платять за минулий рік)
+                        target_keys.append(f"{m:02d}-{y}")
+                
+                elif months_count > 1:
+                    # Якщо "за 2 місяці" — беремо поточний цільовий + наступні
+                    start_m = current_billing_m
+                    start_y = current_billing_y
+                    for i in range(months_count):
+                        # Математика додавання місяців
+                        total_m = start_m + i
+                        calc_m = ((total_m - 1) % 12) + 1
+                        calc_y = start_y + ((total_m - 1) // 12)
+                        target_keys.append(f"{calc_m:02d}-{calc_y}")
+                else:
+                    # Стандарт: за поточний розрахунковий місяць
+                    target_keys.append(f"{current_billing_m:02d}-{current_billing_y}")
 
-                    # 3. Якщо місяців не знайдено — беремо стандартний за датою
-                    if not target_months:
-                        m, _ = get_target_period(now)
-                        target_months = [m]
+                # 4. Записуємо в базу
+                for key in set(target_keys):
+                    if key not in history: history[key] = []
+                    for app in set(found_apps): # set щоб прибрати дублі, якщо двічі написали 44
+                        if app not in history[key]:
+                            history[key].append(app)
+                            print(f"💰 Зараховано: кв. {app} за період {key}")
 
-                    # Записуємо результат в історію
-                    for m_idx in set(target_months):
-                        _, year = get_target_period(now)
-                        # Корекція року для майбутніх місяців у грудні
-                        if m_idx < now.month and now.month >= 11: year += 1
-                        
-                        key = f"{m_idx:02d}-{year}"
-                        if key not in history: history[key] = []
-                        if app_num not in history[key]:
-                            history[key].append(app_num)
-                            print(f"✅ Знайдено оплату: кв. {app_num} за {key}")
     except Exception as e:
         print(f"⚠️ Помилка сканування: {e}")
+        # Не падаємо, щоб зберегти хоча б те, що встигли
+    
     return history
 
-# --- ЛОГІКА ПОВІДОМЛЕНЬ ---
+# --- ВІДПРАВКА ПОВІДОМЛЕНЬ (СТРОГО ПО ДАТАХ) ---
+def process_notifications(config, history, now):
+    target_m, target_y = get_billing_period(now)
+    key = f"{target_m:02d}-{target_y}"
+    
+    # Списки
+    paid = sorted(list(set(history.get(key, []))), key=int)
+    active = sorted([str(a) for a in config.get('active_apartments', [])], key=int)
+    unpaid = [a for a in active if a not in paid]
 
-def send_reports(config, history, month_idx, year):
     ukr_months = {
         1:"січень", 2:"лютий", 3:"березень", 4:"квітень", 5:"травень", 6:"червень", 
         7:"липень", 8:"серпень", 9:"вересень", 10:"жовтень", 11:"листопад", 12:"грудень"
     }
-    m_name = ukr_months[month_idx]
-    key = f"{month_idx:02d}-{year}"
+    month_name = ukr_months[target_m]
     
-    paid = sorted(list(set(history.get(key, []))), key=int)
-    active = sorted([str(a) for a in config.get('active_apartments', [])], key=int)
-    unpaid = [a for a in active if a not in paid]
+    # Визначаємо тип дії за датою
+    day = now.day
+    hour = now.hour
     
-    # Твій короткий дисклеймер
-    sig = "\n\n_🤖 beta: можу помилятись, перевіряйте._"
+    # Прапорець для ручного запуску (GITHUB_EVENT_NAME)
+    is_manual = (os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch')
+    
+    msg = None
+    should_pin = False
 
-    try:
-        # 1. Основні реквізити
-        text_tpl = config['templates'][month_idx-1].format(
-            month_name=m_name, neighbors_list=", ".join(active), 
-            card=config['card_details'], amount=config['monthly_fee'])
-        m = bot.send_message(CHAT_ID, text_tpl + sig, message_thread_id=THREAD_ID, parse_mode='Markdown')
-        
-        # Закріплюємо повідомлення
-        try:
-            bot.unpin_all_chat_messages(CHAT_ID)
-            bot.pin_chat_message(CHAT_ID, m.message_id)
-        except: pass
+    # ЛОГІКА РОЗКЛАДУ
+    if day == 1:
+        print("📅 Сьогодні 1-ше число. Готуємо ПРИВІТАННЯ.")
+        template = config['templates'][target_m-1]
+        msg = template.format(
+            month_name=month_name, 
+            neighbors_list=", ".join(active), 
+            card=config['card_details'], 
+            amount=config['monthly_fee']
+        )
+        should_pin = True
 
-        # 2. Звіт про оплату
-        report = random.choice(config['report_templates']).format(
-            month_name=m_name, 
-            paid_list=", ".join(paid) if paid else "поки ніхто", 
-            unpaid_list=", ".join(unpaid) if unpaid else "всі! 🎉")
-        bot.send_message(CHAT_ID, report + sig, message_thread_id=THREAD_ID, parse_mode='Markdown')
+    elif day == 11:
+        print("📅 Сьогодні 11-те число. Готуємо ЗВІТ (Статистика).")
+        # Беремо випадковий шаблон звіту
+        tpl = random.choice(config['report_templates'])
+        msg = tpl.format(
+            month_name=month_name,
+            paid_list=", ".join(paid) if paid else "—",
+            unpaid_list=", ".join(unpaid) if unpaid else "всі молодці! 🎉"
+        )
 
-        # 3. Нагадування (тільки якщо є боржники)
+    elif day == 19:
+        print("📅 Сьогодні 19-те число. Готуємо НАГАДУВАННЯ.")
         if unpaid:
-            remind = random.choice(config['reminder_templates']).format(
-                month_name=m_name, unpaid_list=", ".join(unpaid), card=config['card_details'])
-            bot.send_message(CHAT_ID, remind + sig, message_thread_id=THREAD_ID, parse_mode='Markdown')
-            
-        print("📢 Звіт надіслано успішно.")
-    except Exception as e:
-        print(f"⚠️ Помилка надсилання: {e}")
+            tpl = random.choice(config['reminder_templates'])
+            msg = tpl.format(
+                month_name=month_name,
+                unpaid_list=", ".join(unpaid),
+                card=config['card_details']
+            )
+        else:
+            print("🎉 Боржників немає, нагадування не потрібне.")
 
-# --- ГОЛОВНИЙ ЗАПУСК ---
+    else:
+        print(f"📆 Сьогодні {day}-те число. Повідомлення за графіком не передбачені.")
+        if is_manual:
+             print("ℹ️ Ручний запуск: Тільки сканування виконано. Щоб протестувати повідомлення, змініть дату на сервері або логіку коду.")
 
+    # ВІДПРАВКА
+    if msg:
+        try:
+            sent_msg = bot.send_message(CHAT_ID, msg, message_thread_id=THREAD_ID, parse_mode='Markdown')
+            print("✅ Повідомлення відправлено.")
+            if should_pin:
+                try:
+                    bot.unpin_all_chat_messages(CHAT_ID)
+                    bot.pin_chat_message(CHAT_ID, sent_msg.message_id)
+                    print("📌 Повідомлення закріплено.")
+                except Exception as pin_e:
+                    print(f"⚠️ Не вдалося закріпити: {pin_e}")
+        except Exception as e:
+            print(f"❌ Помилка відправки Telegram: {e}")
+
+# --- MAIN ---
 def run():
     now = datetime.now(TIMEZONE)
+    print(f"🕒 Запуск бота: {now.strftime('%Y-%m-%d %H:%M:%S')} (Kyiv)")
+    
     config = load_json('config.json')
     history = load_json('history.json')
 
-    # Оновлюємо базу даних завжди
-    updated_history = scan_payments(config, history, now)
-    save_json('history.json', updated_history)
-
-    m, y = get_target_period(now)
+    # 1. Завжди скануємо чат і оновлюємо базу
+    history = scan_chat(config, history, now)
+    save_json('history.json', history)
     
-    # Визначаємо тип запуску
-    is_manual = (os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch')
-    # Звіт надсилається о 9:00 або 12:00 за Києвом. О 23:00 — тільки сканування.
-    is_report_hour = now.hour in [9, 12]
-
-    if is_manual or is_report_hour:
-        send_reports(config, updated_history, m, y)
+    # 2. Перевіряємо, чи треба слати повідомлення
+    # Перевірка часу: дозволяємо відправку тільки в діапазоні ранку/дня, 
+    # щоб нічне сканування (22:30) нічого випадково не слало.
+    if 8 <= now.hour <= 14:
+        process_notifications(config, history, now)
     else:
-        print(f"😴 Планове сканування о {now.hour}:00 завершено. Повідомлення не надсилались.")
+        print("🌙 Вечірній/Нічний запуск. Тільки оновлення бази.")
 
 if __name__ == "__main__":
     run()
