@@ -175,6 +175,11 @@ def process_notifications(config, history, now):
             card=config['card_details'], 
             amount=config['monthly_fee']
         )
+        
+        # Якщо вже є квартири, які сплатили наперед, додаємо їх до повідомлення
+        if paid:
+            msg += f"\n\n🌟 **Вже сплатили наперед:** кв. {', '.join(paid)}"
+            
         should_pin = True
 
     elif day == 11:
