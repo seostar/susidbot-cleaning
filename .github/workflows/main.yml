@@ -1,17 +1,14 @@
 name: Cleaner Bot
 on:
   schedule:
-    # 1. Щоденне тихе сканування (~22:00 за Києвом = 19:00 UTC)
-    - cron: '0 19 * * *'
+    # 1. Щоденне сканування о 22:00 за Києвом (19:00 UTC влітку / 20:00 UTC взимку)
+    - cron: '0 19,20 * * *'
     
-    # 2. Привітання 1-го числа (~10:00 за Києвом = 07:00 UTC)
-    - cron: '0 7 1 * *'
+    # 2. 1-ше число: сканування о 09:00 та відправка о 10:00 за Києвом
+    - cron: '0 6,7,8 1 * *'
     
-    # 3. Звіт 11-го числа (~11:00-12:00 за Києвом = 08:00 UTC)
-    - cron: '0 8 11 * *'
-    
-    # 4. Нагадування 19-го числа (~11:00-12:00 за Києвом = 08:00 UTC)
-    - cron: '0 8 19 * *'
+    # 3. 11-те та 19-те числа: сканування о 10:00 та відправка об 11:00 за Києвом
+    - cron: '0 7,8,9 11,19 * *'
     
   workflow_dispatch:
 
@@ -23,10 +20,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
       - uses: actions/setup-python@v5
         with: {python-version: '3.9'}
         
       - run: pip install pyTelegramBotAPI pytz requests
+      
       - name: Run Bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -35,6 +34,7 @@ jobs:
           GOOGLE_SCRIPT_URL: ${{ secrets.GOOGLE_SCRIPT_URL }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: python bot.py
+        
       - name: Save History
         run: |
           git config --global user.name "SusidBot"
