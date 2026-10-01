@@ -55,11 +55,8 @@ def sync_to_google(history, config):
 
     print("🚀 Відправка даних в Google Sheets...")
     
-    # Відфільтровуємо службові ключі перед відправкою в Google Таблицю
-    clean_history = {k: v for k, v in history.items() if not k.startswith('_')}
-
     payload = {
-        "history": clean_history,
+        "history": history,
         "active_apartments": config.get('active_apartments', [])
     }
 
@@ -157,21 +154,13 @@ def process_notifications(config, history, now):
         7:"липень", 8:"серпень", 9:"вересень", 10:"жовтень", 11:"листопад", 12:"грудень"
     }
     month_name = ukr_months[target_m]
-    
     day = now.day
     is_manual = (os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch')
-    sent_list = history.get('_sent_notifications', [])
     
     msg = None
     should_pin = False
-    notification_tag = None
 
     if day == 1:
-        notification_tag = f"{now.strftime('%Y-%m')}-01_greeting"
-        if notification_tag in sent_list and not is_manual:
-            print(f"ℹ️ Привітання вже надсилалося сьогодні ({notification_tag}). Пропускаємо.")
-            return
-
         print("📅 Сьогодні 1-ше число. Готуємо ПРИВІТАННЯ.")
         template = config['templates'][target_m-1]
         msg = template.format(
@@ -180,18 +169,11 @@ def process_notifications(config, history, now):
             card=config['card_details'], 
             amount=config['monthly_fee']
         )
-        
         if paid:
             msg += f"\n\n🌟 **Вже сплатили наперед:** кв. {', '.join(paid)}"
-            
         should_pin = True
 
     elif day == 11:
-        notification_tag = f"{now.strftime('%Y-%m')}-11_report"
-        if notification_tag in sent_list and not is_manual:
-            print(f"ℹ️ Звіт вже надсилався сьогодні ({notification_tag}). Пропускаємо.")
-            return
-
         print("📅 Сьогодні 11-те число. Готуємо ЗВІТ.")
         tpl = random.choice(config['report_templates'])
         msg = tpl.format(
@@ -201,11 +183,6 @@ def process_notifications(config, history, now):
         )
 
     elif day == 19:
-        notification_tag = f"{now.strftime('%Y-%m')}-19_reminder"
-        if notification_tag in sent_list and not is_manual:
-            print(f"ℹ️ Нагадування вже надсилалося сьогодні ({notification_tag}). Пропускаємо.")
-            return
-
         print("📅 Сьогодні 19-те число. Готуємо НАГАДУВАННЯ.")
         if unpaid:
             tpl = random.choice(config['reminder_templates'])
@@ -233,14 +210,6 @@ def process_notifications(config, history, now):
                     print("📌 Повідомлення закріплено.")
                 except Exception as pin_e:
                     print(f"⚠️ Не вдалося закріпити: {pin_e}")
-            
-            # Зафіксовуємо факт відправки
-            if notification_tag:
-                if '_sent_notifications' not in history:
-                    history['_sent_notifications'] = []
-                if notification_tag not in history['_sent_notifications']:
-                    history['_sent_notifications'].append(notification_tag)
-
         except Exception as e:
             print(f"❌ Помилка відправки Telegram: {e}")
 
@@ -252,20 +221,23 @@ def run():
     config = load_json('config.json')
     history = load_json('history.json')
 
-    # 1. Скануємо чат та оновлюємо історію оплат
+    # 1. Скануємо чат та зберігаємо історію
     history = scan_chat(config, history, now)
-    
-    # 2. Перевіряємо та надсилаємо сповіщення (якщо це 1, 11 або 19 число та час >= 09:00 Kyiv)
-    if now.hour >= 9:
-        process_notifications(config, history, now)
-    else:
-        print("🌙 Нічний/ранішній запуск (до 09:00). Тільки сканування та синхронізація.")
-
-    # 3. Зберігаємо оновлені дані локально
     save_json('history.json', history)
     
-    # 4. Відправляємо оновлені дані в Google Таблицю
+    # 2. Синхронізація з Google Таблицею
     sync_to_google(history, config)
+    
+    # 3. Відправка повідомлень за графіком (1-го о 10:00, 11-го та 19-го об 11:00 за Києвом)
+    is_manual = (os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch')
+    is_send_time = (now.day == 1 and now.hour == 10) or \
+                   (now.day in [11, 19] and now.hour == 11) or \
+                   is_manual
+                   
+    if is_send_time:
+        process_notifications(config, history, now)
+    else:
+        print("ℹ️ Сканування та синхронізація завершені (відправка повідомлення зараз не потрібна).")
 
 if __name__ == "__main__":
     run()
