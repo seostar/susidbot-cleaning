@@ -55,21 +55,17 @@ def sync_to_google(history, config):
 
     print("🚀 Відправка даних в Google Sheets...")
     
-    # Формуємо пакет даних для скрипта
     payload = {
         "history": history,
         "active_apartments": config.get('active_apartments', [])
     }
 
     try:
-        # Відправляємо запит (timeout 10 сек, щоб не зависло)
         response = requests.post(script_url, json=payload, timeout=10)
-        
         if response.status_code == 200:
             print("✅ Дані успішно оновлено в Google Таблиці.")
         else:
             print(f"⚠️ Google Script повернув помилку: {response.status_code} - {response.text}")
-            
     except Exception as e:
         print(f"❌ Помилка з'єднання з Google: {e}")
 
@@ -97,7 +93,6 @@ def scan_chat(config, history, now):
                 continue
 
             is_payment = any(t in text for t in valid_triggers)
-            # Якщо текст дуже короткий (наприклад "18"), вважаємо це оплатою
             if not is_payment and len(text) < 10: 
                 is_payment = True 
             
@@ -161,13 +156,11 @@ def process_notifications(config, history, now):
     month_name = ukr_months[target_m]
     
     day = now.day
-    is_manual = (os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch')
-    
     msg = None
     should_pin = False
 
     if day == 1:
-        print("📅 Сьогодні 1-ше число. Готуємо ПРИВІТАННЯ.")
+        print("📅 Формуємо ПРИВІТАННЯ за 1-ше число.")
         template = config['templates'][target_m-1]
         msg = template.format(
             month_name=month_name, 
@@ -175,15 +168,12 @@ def process_notifications(config, history, now):
             card=config['card_details'], 
             amount=config['monthly_fee']
         )
-        
-        # Якщо вже є квартири, які сплатили наперед, додаємо їх до повідомлення
         if paid:
             msg += f"\n\n🌟 **Вже сплатили наперед:** кв. {', '.join(paid)}"
-            
         should_pin = True
 
     elif day == 11:
-        print("📅 Сьогодні 11-те число. Готуємо ЗВІТ.")
+        print("📅 Формуємо ЗВІТ за 11-те число.")
         tpl = random.choice(config['report_templates'])
         msg = tpl.format(
             month_name=month_name,
@@ -192,7 +182,7 @@ def process_notifications(config, history, now):
         )
 
     elif day == 19:
-        print("📅 Сьогодні 19-те число. Готуємо НАГАДУВАННЯ.")
+        print("📅 Формуємо НАГАДУВАННЯ за 19-те число.")
         if unpaid:
             tpl = random.choice(config['reminder_templates'])
             msg = tpl.format(
@@ -203,15 +193,10 @@ def process_notifications(config, history, now):
         else:
             print("🎉 Боржників немає, нагадування не потрібне.")
 
-    else:
-        print(f"📆 Сьогодні {day}-те число. Повідомлення за графіком не передбачені.")
-        if is_manual:
-             print("ℹ️ Ручний запуск: Тільки сканування.")
-
     if msg:
         try:
             sent_msg = bot.send_message(CHAT_ID, msg, message_thread_id=THREAD_ID, parse_mode='Markdown')
-            print("✅ Повідомлення відправлено.")
+            print("✅ Повідомлення успішно відправлено в Telegram.")
             if should_pin:
                 try:
                     bot.unpin_all_chat_messages(CHAT_ID)
@@ -229,21 +214,32 @@ def run():
     
     config = load_json('config.json')
     history = load_json('history.json')
-
-    # 1. Спершу скануємо (оновлюємо дані)
-    history = scan_chat(config, history, now)
     
-    # 2. Зберігаємо локально
+    kyiv_hour = now.hour
+    day = now.day
+    is_manual = (os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch')
+
+    # 1. ЗАВЖДИ СКАНУЄМО ЧАТ ПЕРЕД БУДЬ-ЯКИМИ ДІЯМИ
+    history = scan_chat(config, history, now)
     save_json('history.json', history)
     
-    # 3. Відправляємо в Google Таблицю (Оновлення щодня)
-    sync_to_google(history, config)
-    
-    # 4. Перевіряємо, чи треба слати повідомлення (тільки вдень)
-    if 8 <= now.hour <= 14:
+    # 2. ТИХА СИНХРОНІЗАЦІЯ (Без відправки повідомлень)
+    # Спрацьовує: зранку о 7-8 год (для 1 числа), о 10-11 год (для 11, 19 числа), або ввечері після 21:00.
+    if not is_manual and (
+        (day == 1 and 7 <= kyiv_hour <= 8) or 
+        (day in [11, 19] and 10 <= kyiv_hour <= 11) or 
+        (kyiv_hour >= 21)
+    ):
+        print("🔄 Тиха година: запущено синхронізацію даних для Google Sheets.")
+        sync_to_google(history, config)
+        return # Зупиняємо скрипт, не переходимо до розсилки
+
+    # 3. ВІДПРАВКА ПОВІДОМЛЕНЬ
+    # Спрацьовує: якщо час між 9:00 та 14:00 (для покриття затримок GitHub) або якщо це ручний запуск.
+    if 9 <= kyiv_hour <= 14 or is_manual:
         process_notifications(config, history, now)
     else:
-        print("🌙 Вечірній/Нічний запуск. Тільки оновлення бази та таблиці.")
+        print("⏭️ Запуск не потрапив у цільове вікно. Нічого не відправлено.")
 
 if __name__ == "__main__":
     run()
