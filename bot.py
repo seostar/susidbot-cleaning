@@ -55,8 +55,11 @@ def sync_to_google(history, config):
 
     print("🚀 Відправка даних в Google Sheets...")
     
+    # Відфільтровуємо службові ключі перед відправкою в Google Таблицю
+    clean_history = {k: v for k, v in history.items() if not k.startswith('_')}
+
     payload = {
-        "history": history,
+        "history": clean_history,
         "active_apartments": config.get('active_apartments', [])
     }
 
@@ -156,11 +159,20 @@ def process_notifications(config, history, now):
     month_name = ukr_months[target_m]
     
     day = now.day
+    is_manual = (os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch')
+    sent_list = history.get('_sent_notifications', [])
+    
     msg = None
     should_pin = False
+    notification_tag = None
 
     if day == 1:
-        print("📅 Формуємо ПРИВІТАННЯ за 1-ше число.")
+        notification_tag = f"{now.strftime('%Y-%m')}-01_greeting"
+        if notification_tag in sent_list and not is_manual:
+            print(f"ℹ️ Привітання вже надсилалося сьогодні ({notification_tag}). Пропускаємо.")
+            return
+
+        print("📅 Сьогодні 1-ше число. Готуємо ПРИВІТАННЯ.")
         template = config['templates'][target_m-1]
         msg = template.format(
             month_name=month_name, 
@@ -168,12 +180,19 @@ def process_notifications(config, history, now):
             card=config['card_details'], 
             amount=config['monthly_fee']
         )
+        
         if paid:
             msg += f"\n\n🌟 **Вже сплатили наперед:** кв. {', '.join(paid)}"
+            
         should_pin = True
 
     elif day == 11:
-        print("📅 Формуємо ЗВІТ за 11-те число.")
+        notification_tag = f"{now.strftime('%Y-%m')}-11_report"
+        if notification_tag in sent_list and not is_manual:
+            print(f"ℹ️ Звіт вже надсилався сьогодні ({notification_tag}). Пропускаємо.")
+            return
+
+        print("📅 Сьогодні 11-те число. Готуємо ЗВІТ.")
         tpl = random.choice(config['report_templates'])
         msg = tpl.format(
             month_name=month_name,
@@ -182,7 +201,12 @@ def process_notifications(config, history, now):
         )
 
     elif day == 19:
-        print("📅 Формуємо НАГАДУВАННЯ за 19-те число.")
+        notification_tag = f"{now.strftime('%Y-%m')}-19_reminder"
+        if notification_tag in sent_list and not is_manual:
+            print(f"ℹ️ Нагадування вже надсилалося сьогодні ({notification_tag}). Пропускаємо.")
+            return
+
+        print("📅 Сьогодні 19-те число. Готуємо НАГАДУВАННЯ.")
         if unpaid:
             tpl = random.choice(config['reminder_templates'])
             msg = tpl.format(
@@ -193,10 +217,15 @@ def process_notifications(config, history, now):
         else:
             print("🎉 Боржників немає, нагадування не потрібне.")
 
+    else:
+        print(f"📆 Сьогодні {day}-те число. Повідомлення за графіком не передбачені.")
+        if is_manual:
+            print("ℹ️ Ручний запуск: Тільки сканування.")
+
     if msg:
         try:
             sent_msg = bot.send_message(CHAT_ID, msg, message_thread_id=THREAD_ID, parse_mode='Markdown')
-            print("✅ Повідомлення успішно відправлено в Telegram.")
+            print("✅ Повідомлення відправлено.")
             if should_pin:
                 try:
                     bot.unpin_all_chat_messages(CHAT_ID)
@@ -204,6 +233,14 @@ def process_notifications(config, history, now):
                     print("📌 Повідомлення закріплено.")
                 except Exception as pin_e:
                     print(f"⚠️ Не вдалося закріпити: {pin_e}")
+            
+            # Зафіксовуємо факт відправки
+            if notification_tag:
+                if '_sent_notifications' not in history:
+                    history['_sent_notifications'] = []
+                if notification_tag not in history['_sent_notifications']:
+                    history['_sent_notifications'].append(notification_tag)
+
         except Exception as e:
             print(f"❌ Помилка відправки Telegram: {e}")
 
@@ -214,32 +251,21 @@ def run():
     
     config = load_json('config.json')
     history = load_json('history.json')
-    
-    kyiv_hour = now.hour
-    day = now.day
-    is_manual = (os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch')
 
-    # 1. ЗАВЖДИ СКАНУЄМО ЧАТ ПЕРЕД БУДЬ-ЯКИМИ ДІЯМИ
+    # 1. Скануємо чат та оновлюємо історію оплат
     history = scan_chat(config, history, now)
-    save_json('history.json', history)
     
-    # 2. ТИХА СИНХРОНІЗАЦІЯ (Без відправки повідомлень)
-    # Спрацьовує: зранку о 7-8 год (для 1 числа), о 10-11 год (для 11, 19 числа), або ввечері після 21:00.
-    if not is_manual and (
-        (day == 1 and 7 <= kyiv_hour <= 8) or 
-        (day in [11, 19] and 10 <= kyiv_hour <= 11) or 
-        (kyiv_hour >= 21)
-    ):
-        print("🔄 Тиха година: запущено синхронізацію даних для Google Sheets.")
-        sync_to_google(history, config)
-        return # Зупиняємо скрипт, не переходимо до розсилки
-
-    # 3. ВІДПРАВКА ПОВІДОМЛЕНЬ
-    # Спрацьовує: якщо час між 9:00 та 14:00 (для покриття затримок GitHub) або якщо це ручний запуск.
-    if 9 <= kyiv_hour <= 14 or is_manual:
+    # 2. Перевіряємо та надсилаємо сповіщення (якщо це 1, 11 або 19 число та час >= 09:00 Kyiv)
+    if now.hour >= 9:
         process_notifications(config, history, now)
     else:
-        print("⏭️ Запуск не потрапив у цільове вікно. Нічого не відправлено.")
+        print("🌙 Нічний/ранішній запуск (до 09:00). Тільки сканування та синхронізація.")
+
+    # 3. Зберігаємо оновлені дані локально
+    save_json('history.json', history)
+    
+    # 4. Відправляємо оновлені дані в Google Таблицю
+    sync_to_google(history, config)
 
 if __name__ == "__main__":
     run()
