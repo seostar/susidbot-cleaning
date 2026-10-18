@@ -228,16 +228,23 @@ def run():
     # 2. Синхронізація з Google Таблицею
     sync_to_google(history, config)
     
-    # 3. Відправка повідомлень за графіком (1-го о 10:00, 11-го та 19-го об 11:00 за Києвом)
+    # 3. Відправка повідомлень із захистом від затримок GitHub Actions
     is_manual = (os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch')
-    is_send_time = (now.day == 1 and now.hour == 10) or \
-                   (now.day in [11, 19] and now.hour == 11) or \
-                   is_manual
+    
+    target_m, target_y = get_billing_period(now)
+    notif_flag = f"{target_m:02d}-{target_y}_day_{now.day}"
+    sent_logs = history.get("sent_logs", [])
+    
+    # Відправляємо, якщо це 1, 11 або 19 число, і ми ще не відправляли сьогодні
+    is_send_time = (now.day in [1, 11, 19] and notif_flag not in sent_logs)
                    
-    if is_send_time:
+    if is_send_time or is_manual:
         process_notifications(config, history, now)
+        if not is_manual:
+            history.setdefault("sent_logs", []).append(notif_flag)
+            save_json('history.json', history)
     else:
-        print("ℹ️ Сканування та синхронізація завершені (відправка повідомлення зараз не потрібна).")
+        print("ℹ️ Сканування та синхронізація завершені (відправка повідомлення зараз не потрібна або вже була виконана сьогодні).")
 
 if __name__ == "__main__":
     run()
