@@ -5,7 +5,6 @@ on:
     - cron: '0 21 * * *'
     
     # 2. Часті запуски 1, 11 та 19 числа з 09:00 до 18:00 за Києвом (06, 09, 12, 15 за UTC)
-    # Це гарантує, що навіть при затримках на серверах GitHub, повідомлення піде вдень.
     - cron: '0 6,9,12,15 1,11,19 * *'
     
   workflow_dispatch:
@@ -20,7 +19,7 @@ jobs:
       - uses: actions/checkout@v4
       
       - uses: actions/setup-python@v5
-        with: {python-version: '3.9'}
+        with: {python-version: '3.11'}
         
       - run: pip install pyTelegramBotAPI pytz requests
       
