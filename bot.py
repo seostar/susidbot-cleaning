@@ -235,8 +235,10 @@ def run():
     notif_flag = f"{target_m:02d}-{target_y}_day_{now.day}"
     sent_logs = history.get("sent_logs", [])
     
-    # Відправляємо, якщо це 1, 11 або 19 число, і ми ще не відправляли сьогодні
-    is_send_time = (now.day in [1, 11, 19] and notif_flag not in sent_logs)
+    is_daytime = 9 <= now.hour < 22 # Відправка дозволена з 09:00 до 21:59
+    
+    # Відправляємо, якщо це 1, 11 або 19 число, вдень, і ми ще не відправляли сьогодні
+    is_send_time = (now.day in [1, 11, 19] and notif_flag not in sent_logs and is_daytime)
                    
     if is_send_time or is_manual:
         process_notifications(config, history, now)
@@ -244,7 +246,10 @@ def run():
             history.setdefault("sent_logs", []).append(notif_flag)
             save_json('history.json', history)
     else:
-        print("ℹ️ Сканування та синхронізація завершені (відправка повідомлення зараз не потрібна або вже була виконана сьогодні).")
+        if now.day in [1, 11, 19] and notif_flag not in sent_logs and not is_daytime:
+             print("ℹ️ Сканування завершено. Відправка відкладена: зараз ніч або ранній ранок (дозволено з 09:00 до 22:00).")
+        else:
+             print("ℹ️ Сканування та синхронізація завершені (відправка повідомлення зараз не потрібна або вже була виконана сьогодні).")
 
 if __name__ == "__main__":
     run()
